@@ -22,6 +22,10 @@ The portfolio should show that the developer can:
 
 The product is intended to prove applied AI engineering in a small, credible, buildable slice.
 
+### Current implementation status
+
+Stage 1 is complete, reviewed, and approved. The current application is a frontend-only prototype using typed mock enquiry and activity data with local/mock interactions. It has no real LLM connection, runtime Zod validation, persistence, external email integration, or external API calls. The final V1 capabilities described below remain future work.
+
 ## 3. Narrow product concept
 
 The product is an AI Lead Workspace for a service business that receives customer enquiries by email, web form, or manual intake.
@@ -34,50 +38,45 @@ The application processes this text into a structured lead summary, identifies m
 
 ## 4. Primary workflow
 
-The intended end-to-end flow is:
+### Final V1 workflow
 
-1. User enters or imports an enquiry.
-2. Server calls an LLM.
-3. LLM returns structured output.
-4. Application validates the output with Zod.
-5. Application proposes one or more actions.
-6. User reviews and either approves, edits, or rejects the action.
-7. Only approved actions are executed.
-8. The result is persisted and visible in the activity timeline.
+The final end-to-end workflow is:
 
-This is the central demonstration:
+1. User submits an unstructured enquiry.
+2. The server sends it to a real LLM and receives structured output.
+3. The application validates the output with Zod and persists the analysis.
+4. The model proposes a narrow tool/function action.
+5. The application validates the proposed action independently.
+6. The user reviews, edits, approves, or rejects the proposal.
+7. The application executes only an approved action through the database or external integration.
+8. The result is persisted and visible in activity history.
 
-unstructured enquiry → LLM → structured output → validation → tool/function request → human approval → application action → database/external API → visible result
+The required V1 demonstration is:
+
+unstructured enquiry → real LLM → structured output → Zod validation → persistence → tool/function proposal → application-side validation → human approval → approved action execution → external API/database → visible result
+
+This describes the final V1 goal, not current Stage 1 behavior. Stage 1 displays seeded analysis and activity fixtures. Its search, filters, draft editing, approval/cancellation states, and failed-analysis retry state are local UI interactions; they do not call a model, validate a live response, persist changes, send email, or execute an external action.
 
 ## 5. Minimal information architecture
 
-The app should be intentionally small.
+The app should be intentionally small. Its canonical routes are:
 
-Primary surfaces:
+- `/` redirects to `/dashboard`.
+- `/dashboard` is the Overview triage workspace, initially filtered to enquiries needing attention.
+- `/enquiries/[id]` is the enquiry detail, AI analysis, and approval experience.
+- `/activity` is the workspace activity/history view.
 
-- Dashboard / enquiries list
-- Enquiry detail with AI analysis and proposed actions
-- Activity/history
+The current implementation also exposes `/enquiries` as the full, unfiltered enquiry list, linked from workspace navigation. This is an alternate view of the queue, not a separate product surface.
 
-Optional intake can be a small modal or panel on the dashboard rather than a separate major section.
-
-There should not be a separate leads CRM, project management workspace, or large multi-page sales system in V1.
+There should not be a separate leads CRM, project management workspace, or large multi-page sales system in V1. Optional intake can remain a small modal or panel rather than a major section.
 
 ## 6. Screen descriptions
 
 ### Dashboard / enquiries list
 
-Purpose: review incoming enquiries and their current state.
+Purpose: triage incoming enquiries and navigate to their detail views, not present analytics.
 
-Displays:
-
-- enquiry title or company name
-- source
-- timestamp
-- status
-- priority
-- project type
-- quick summary
+The current Overview shows enquiries needing attention; `/enquiries` shows the full list. Both use local search and status filtering over typed mock data. Rows display company/contact, source, received time, project type, summary, workflow status, priority, and lead score when available. Selecting a row opens `/enquiries/[id]`.
 
 ### Enquiry detail
 
@@ -98,7 +97,7 @@ Displays:
 
 ### Activity/history
 
-Purpose: make the AI workflow observable.
+Purpose: make the workflow understandable to a business user.
 
 Displays:
 
@@ -110,18 +109,13 @@ Displays:
 - external action executed
 - error states
 
+Stage 1 renders this history from typed mock activity fixtures. Date grouping, filters, timestamps, and links to enquiry details are present; events are not written by a backend or guaranteed to match locally changed detail-page state.
+
 ## 7. Visual direction
 
-The UI should feel like polished B2B SaaS software, not a chatbot.
+The implemented and approved Stage 1 UI is the visual source of truth. Extend its existing styles rather than reverting to earlier generic descriptions or introducing a new visual system.
 
-Design principles:
-
-- professional business styling
-- clear hierarchy and readable data density
-- tabs, cards, side panels, and compact review states
-- distinction between raw enquiry, AI output, and user-approved action
-- subtle loading and error states
-- little or no decorative AI branding
+The current visual language uses Rajdhani typography; a deep aubergine/indigo sidebar and ink; a pale lilac canvas with white panels and subtle lilac borders; and restrained green and amber accents for workflow status. Muted text is darker on light surfaces and uses a separate light-grey treatment on the dark sidebar. Visible text has a 12px minimum. Keep the existing compact B2B information hierarchy, panel/card treatment, borders, spacing, and responsive navigation and column behavior. Preserve the distinction between source enquiry, seeded analysis, and proposed action. Do not redesign or reinterpret these choices.
 
 ## 8. Minimal data model
 
@@ -179,7 +173,11 @@ The data model should be small and focused.
 
 These four entities are enough to prove the workflow without turning the app into a CRM product.
 
+This is the target domain model for the final V1, not a description of Stage 1 persistence. Stage 1 currently represents these concepts with typed mock fixtures; it has no database or persisted domain entities.
+
 ## 9. AI analysis schema
+
+This is the planned runtime schema for real model output in a later stage. Stage 1 does not call an LLM or run this Zod validation; its “validated” labels are seeded mock presentation state.
 
 The LLM must return structured data. All model output is validated with Zod before it is used.
 
@@ -229,7 +227,7 @@ Validation rules:
 
 ## 10. LLM tools/functions
 
-The app should support only a few narrow function definitions. The model proposes them; the application validates and executes only approved ones.
+The final V1 should support only a few narrow function definitions. The model will propose them; the application will validate and execute only approved ones. Stage 1 has no model tool/function calls or application-side action validation.
 
 ### `draft_reply`
 
@@ -282,9 +280,11 @@ Important rule:
 
 - the model may suggest actions, but the application owns execution
 
+In Stage 1, approval, edit, cancellation, and retry are local prototype states only. Approval does not trigger execution, and retry does not rerun analysis. Seeded history may illustrate outcomes such as an email being sent, but no email is sent by the prototype.
+
 ## 12. One external integration
 
-The V1 should include exactly one real external integration: email.
+The final V1 should include exactly one real external integration: email. Stage 1 has no email or other external API integration.
 
 Preferred provider: Resend.
 
@@ -293,6 +293,8 @@ Use case: send a brief follow-up email after human approval.
 This demonstrates the real business flow without building a broader automation platform.
 
 ## 13. Simple technical architecture
+
+The following is the target architecture for final V1. Stage 1 is limited to the Next.js App Router, React, TypeScript, shared UI components, and typed local mock data; it has no backend, database, AI, or email service layer.
 
 Preferred stack:
 
@@ -350,6 +352,8 @@ The architecture should be simple and explicit:
 
 The product should include useful production-minded safeguards without enterprise complexity.
 
+The requirements below apply to the final working V1. Stage 1 only presents mock failure/retry states and local approval states; these do not represent live API, validation, persistence, or email error handling.
+
 Required handling:
 
 - loading states during analysis
@@ -369,20 +373,19 @@ Avoid introducing:
 
 ## 16. Stage 1 — frontend-only prototype
 
-This is a separate design and validation stage.
+Status: complete, reviewed, and approved. Stage 1 validates the product story and UX before backend implementation.
 
-Purpose: validate the product story and UX before implementing the AI/backend stack.
+The implemented experience includes:
 
-Scope:
+- `/` redirecting to `/dashboard`
+- an Overview triage queue at `/dashboard` and a full enquiry list at `/enquiries`
+- enquiry detail, seeded analysis, and local approval controls at `/enquiries/[id]`
+- workspace activity/history at `/activity`
+- typed mock enquiry records and typed mock activity events
+- local search, queue/activity filters, draft editing, approval/cancellation presentation, and a mock analysis retry state
+- the approved visual system described in Section 7
 
-- static or mock data only
-- no real LLM call
-- no real Supabase or database
-- no real email integration
-- polished dashboard and detail views
-- realistic approval and history states
-
-This stage proves the product is valuable and credible before creating backend complexity.
+Stage 1 has no real LLM connection, runtime Zod validation, persistence, database, email integration, or external API calls. Seeded labels and outcomes are prototype data, not proof that those backend capabilities exist. Do not implement Stage 2 as part of Stage 1 maintenance.
 
 ## 17. Final working V1 scope
 
@@ -402,9 +405,11 @@ It must include:
 - visible activity/history
 - loading/error states
 
-The final V1 should actually prove the end-to-end chain:
+The final V1 must actually prove the complete end-to-end chain:
 
-unstructured enquiry → LLM → structured output → validation → tool/function request → human approval → application action → database/external API → visible result
+unstructured enquiry → real LLM → structured output → Zod validation → persistence → tool/function proposal → application-side validation → human approval → approved action execution → external API/database → visible result
+
+Stage 1 is not the final V1 and does not satisfy these real integration requirements.
 
 ## 18. Explicit non-goals
 
@@ -440,49 +445,36 @@ These should come after the core AI workflow is proven, not before.
 
 ## 20. Implementation stages
 
-### Stage 1: UX prototype
+### Stage 1: UX prototype (completed)
 
-Goal: validate the interface and product story.
+Status: complete, reviewed, and approved. The dashboard/queue, detail and approval experience, activity/history, typed mock data, and local interactions are implemented. No backend capability is implied by the mock states.
 
-Deliverables:
+### Stage 2: replace mock analysis incrementally
 
-- dashboard and enquiry list
-- detail view for enquiry and AI analysis
-- mock data and approval states
+This is the next implementation stage. Replace the mock analysis for an enquiry with a server-side call to a real LLM, validate its structured response with the Section 9 Zod schema, and expose clear loading and failure states. Keep the existing UI and mock-only areas that are not part of this slice; do not attempt to build the whole V1 at once. Persist the validated analysis as the next increment when its data path is ready.
 
-### Stage 2: real AI analysis and validation
+### Stage 3: persistence, proposals, and approved execution
 
-Goal: implement a real LLM call and schema validation.
+Goal: replace mock workflow state with a small persisted domain model and prove the model-to-application boundary.
 
 Deliverables:
 
-- server-side API route
-- OpenAI call
-- Zod schema validation
-- structured analysis saved to database
-
-### Stage 3: action approval and execution
-
-Goal: prove the model-to-application boundary.
-
-Deliverables:
-
-- tool proposal flow
-- approval UI
-- validated action execution path
-- small email integration
+- persistence for Enquiry, Analysis, Action, and ActivityEvent
+- narrow tool/function proposals and application-side payload validation
+- human review, edit, approve, and reject flow
+- server-side execution of approved actions only
+- the single planned email integration
 
 ### Stage 4: final polish
 
-Goal: ensure the product is credible and stable.
+Goal: ensure the final V1 is credible and stable.
 
 Deliverables:
 
-- error handling
-- loading states
-- duplicate protection
-- activity timeline
-- final UI tuning
+- production-minded loading and error handling
+- basic duplicate protection for email sends
+- complete activity history for meaningful workflow events
+- final UI tuning within the approved Stage 1 visual system
 
 ## 21. Acceptance criteria
 
@@ -492,6 +484,7 @@ Deliverables:
 - clear end-to-end enquiry-to-analysis story
 - realistic mock data
 - obvious approval states
+- canonical routes and Stage 1 limitations are documented accurately
 
 ### Final V1 acceptance criteria
 
@@ -506,7 +499,7 @@ Deliverables:
 
 ## 22. Definition of done
 
-The project is done when the portfolio version demonstrates a small but credible AI workflow that can be understood and trusted by a hiring manager or client.
+The final V1 is done when the portfolio version demonstrates a small but credible real AI workflow that can be understood and trusted by a hiring manager or client. Completion of Stage 1 alone does not meet this definition.
 
 Specifically, the final V1 should show:
 
