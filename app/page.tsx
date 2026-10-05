@@ -24,6 +24,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { mockEnquiry, type ActivityEvent } from "@/lib/mock-enquiry";
 
@@ -82,10 +83,10 @@ export default function Home() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#main-content" aria-label="Morrow workspace home">
+        <Link className="brand" href="/dashboard" aria-label="Morrow workspace home">
           <span className="brand-mark"><Layers3 size={18} strokeWidth={2.2} /></span>
           <span className="brand-name">morrow<span>.</span></span>
-        </a>
+        </Link>
         <div className="workspace-switcher">
           <span className="workspace-avatar">N</span>
           <span className="workspace-copy"><strong>Northline Studio</strong><small>Workspace</small></span>
@@ -93,9 +94,9 @@ export default function Home() {
         </div>
         <div className="nav-caption">WORKSPACE</div>
         <nav className="primary-nav" aria-label="Workspace">
-          <div className="nav-item"><BriefcaseBusiness size={17} /><span>Overview</span></div>
-          <div className="nav-item is-active" aria-current="page"><Inbox size={17} /><span>Enquiries</span><span className="nav-count">12</span></div>
-          <div className="nav-item"><Activity size={17} /><span>Activity</span></div>
+          <Link className="nav-item" href="/dashboard"><BriefcaseBusiness size={17} /><span>Overview</span></Link>
+          <Link className="nav-item is-active" href="/enquiries" aria-current="page"><Inbox size={17} /><span>Enquiries</span><span className="nav-count">5</span></Link>
+          <Link className="nav-item" href="/activity"><Activity size={17} /><span>Activity</span></Link>
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-help"><CircleHelp size={17} /><span>Help centre</span><ArrowUpRight size={14} /></div>
@@ -245,7 +246,7 @@ export default function Home() {
                   <button className="quiet-button" type="button" aria-label="Activity options"><MoreHorizontal size={18} /></button>
                 </div>
                 <ol className="timeline-list">{events.map((event, index) => <TimelineItem key={event.id} event={event} isLast={index === events.length - 1} />)}</ol>
-                <button className="activity-link" type="button">View full history <ChevronRight size={14} /></button>
+                <Link className="activity-link" href="/activity">View full history <ChevronRight size={14} /></Link>
               </section>
               <div className="analysis-footnote"><ShieldCheck size={15} /> AI output validated before review</div>
             </aside>
