@@ -457,6 +457,13 @@ a { color: inherit; text-decoration: none; }
 	color: var(--text-muted-green);
 }
 
+.analysis-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.analyze-button { flex: 0 0 auto; }
+.analysis-spinner { animation: analysis-spin 1s linear infinite; }
+.analysis-local-note { color: var(--text-muted); font-size: 12px; }
+.analysis-request-error { padding: 9px 11px; margin: 9px 0 0; color: #854c40; border: 1px solid #efd9d3; border-radius: 5px; background: #fff7f4; font-size: 12px; line-height: 1.45; }
+@keyframes analysis-spin { to { transform: rotate(360deg); } }
+
 .sidebar-help > svg:last-child,
 .user-profile > svg {
 	color: var(--text-on-dark-muted);

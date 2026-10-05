@@ -10,6 +10,7 @@ import {
   ChevronRight,
   FileText,
   Inbox,
+  LoaderCircle,
   Mail,
   MoreHorizontal,
   Pencil,
@@ -23,6 +24,12 @@ import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import type { ActivityEvent } from "@/lib/mock-enquiry";
 import type { WorkspaceEnquiry } from "@/lib/mock-workspace";
+import {
+  AnalyzeEnquiryErrorSchema,
+  AnalyzeEnquiryRequestSchema,
+  AnalyzeEnquiryResponseSchema,
+  type LeadAnalysis,
+} from "@/lib/lead-analysis-schema";
 
 type ActionState = "awaiting" | "approved" | "cancelled";
 
@@ -55,13 +62,97 @@ function initials(name: string) {
   return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
+function formatPriority(priority: LeadAnalysis["priority"]) {
+  return `${priority[0].toUpperCase()}${priority.slice(1)}`;
+}
+
+function currencyMark(currency: string | null) {
+  const marks: Record<string, string> = {
+    USD: "$",
+    CAD: "C$",
+    AUD: "A$",
+    NZD: "NZ$",
+    GBP: "£",
+    EUR: "€",
+  };
+
+  return currency ? marks[currency] ?? "¤" : "¤";
+}
+
+function formatBudgetRange(budget: LeadAnalysis["budgetRange"]) {
+  if (budget.statedText) return budget.statedText;
+  if (budget.min === null && budget.max === null) return "Not provided";
+
+  const formatAmount = (amount: number) => `${currencyMark(budget.currency)}${amount.toLocaleString("en-US")}`;
+  if (budget.min !== null && budget.max !== null) {
+    return budget.min === budget.max ? formatAmount(budget.min) : `${formatAmount(budget.min)}–${formatAmount(budget.max)}`;
+  }
+
+  return budget.min !== null ? `From ${formatAmount(budget.min)}` : `Up to ${formatAmount(budget.max as number)}`;
+}
+
 export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
   const [actionState, setActionState] = useState<ActionState>(enquiry.actionStatus ?? "awaiting");
   const [isEditing, setIsEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(enquiry.proposedAction.body);
   const [events, setEvents] = useState(enquiry.activity);
-  const [retryRequested, setRetryRequested] = useState(false);
-  const analysisFailed = enquiry.analysisStatus === "failed";
+  // Keep live analysis local until a later stage adds persistence.
+  const [liveAnalysis, setLiveAnalysis] = useState<LeadAnalysis | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const analysisFailed = enquiry.analysisStatus === "failed" && liveAnalysis === null;
+  const companyName = liveAnalysis?.companyName ?? enquiry.companyName;
+  const contactName = liveAnalysis?.contactName ?? enquiry.contactName;
+  const contactEmail = liveAnalysis?.contactEmail ?? enquiry.email;
+  const projectType = liveAnalysis ? liveAnalysis.projectType ?? "Not identified" : enquiry.projectType;
+  const budget = liveAnalysis ? formatBudgetRange(liveAnalysis.budgetRange) : enquiry.budget;
+  const timeline = liveAnalysis?.timeline.requestedLaunch ?? (liveAnalysis ? "Not provided" : enquiry.timeline);
+  const leadScore = liveAnalysis?.leadScore ?? enquiry.leadScore;
+  const priority = liveAnalysis ? formatPriority(liveAnalysis.priority) : enquiry.priority;
+  const qualificationSummary = liveAnalysis?.qualificationSummary ?? enquiry.summary;
+  const requirements = liveAnalysis?.requirements ?? enquiry.requirements;
+  const missingInformation = liveAnalysis?.missingInformation ?? enquiry.missingInformation;
+  const recommendedNextAction = liveAnalysis?.recommendedNextStep ?? enquiry.recommendedNextAction;
+
+  async function runAnalysis() {
+    setAnalysisError(null);
+    const request = AnalyzeEnquiryRequestSchema.safeParse({ originalText: enquiry.originalText });
+
+    if (!request.success) {
+      setAnalysisError("This enquiry does not contain usable text to analyse.");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      // Send source text only; contact details remain in the existing enquiry fixture.
+      const response = await fetch("/api/ai/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.data),
+      });
+      const payload: unknown = await response.json();
+
+      if (!response.ok) {
+        const failure = AnalyzeEnquiryErrorSchema.safeParse(payload);
+        setAnalysisError(failure.success ? failure.data.error.message : "AI analysis could not be completed. Please try again.");
+        return;
+      }
+
+      // Validate the endpoint response again before it enters render state.
+      const result = AnalyzeEnquiryResponseSchema.safeParse(payload);
+      if (!result.success) {
+        setAnalysisError("The analysis result could not be verified. Please try again.");
+        return;
+      }
+
+      setLiveAnalysis(result.data.analysis);
+    } catch {
+      setAnalysisError("AI analysis could not be completed. Check your connection and try again.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }
 
   function updateAction(nextState: Exclude<ActionState, "awaiting">) {
     setActionState(nextState);
@@ -87,7 +178,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
       <div className="page-heading">
         <div>
           <div className="eyebrow">ENQUIRY DETAIL <span>/</span> {enquiry.id}</div>
-          <h1>{enquiry.companyName}</h1>
+          <h1>{companyName}</h1>
           <p className="page-subtitle">Review the enquiry, analysis and suggested follow-up.</p>
         </div>
         <div className="heading-status">
@@ -102,10 +193,10 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
         <div className="primary-column">
           <section className="panel contact-panel" aria-labelledby="contact-heading">
             <div className="contact-identity">
-              <div className="company-avatar">{initials(enquiry.companyName)}</div>
+              <div className="company-avatar">{initials(companyName)}</div>
               <div className="contact-name-block">
-                <h2 id="contact-heading">{enquiry.companyName}</h2>
-                <p>{enquiry.contactName} <span>|</span> <a href={`mailto:${enquiry.email}`}>{enquiry.email}</a></p>
+                <h2 id="contact-heading">{companyName}</h2>
+                <p>{contactName} <span>|</span> <a href={`mailto:${contactEmail}`}>{contactEmail}</a></p>
               </div>
             </div>
             <div className="contact-meta"><span className="source-label"><Inbox size={14} /> {enquiry.source}</span><span className="meta-separator" /><span>Received {enquiry.receivedAt}</span></div>
@@ -118,44 +209,50 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
                 <div>
                   <div className="section-kicker">AI ANALYSIS {analysisFailed
                     ? <span className="analysis-state-failed">Needs retry</span>
-                    : <span className="validated-label"><BadgeCheck size={13} /> Validated</span>}
+                    : <span className="validated-label"><BadgeCheck size={13} />{liveAnalysis ? "Live result" : "Validated"}</span>}
                   </div>
-                  <h2 id="analysis-heading">{enquiry.id === "ENQ-2048" ? "A qualified project with clear intent" : enquiry.summary}</h2>
+                  <h2 id="analysis-heading">{liveAnalysis?.qualificationSummary ?? (enquiry.id === "ENQ-2048" ? "A qualified project with clear intent" : enquiry.summary)}</h2>
                 </div>
               </div>
               <button className="quiet-button" type="button" aria-label="Analysis details"><MoreHorizontal size={18} /></button>
             </div>
+
+            <div className="analysis-action-row">
+              <button className="button button-secondary analyze-button" type="button" onClick={() => void runAnalysis()} disabled={isAnalyzing}>
+                {isAnalyzing ? <LoaderCircle className="analysis-spinner" size={15} /> : <Sparkles size={15} />}
+                {isAnalyzing ? "Analysing..." : liveAnalysis ? "Analyse again" : "Analyse with AI"}
+              </button>
+              {liveAnalysis && <span className="analysis-local-note">Live result · not saved</span>}
+            </div>
+            {analysisError && <p className="analysis-request-error" role="alert">{analysisError}</p>}
 
             {analysisFailed ? (
               <div className="recommendation analysis-failure">
                 <span className="recommendation-icon"><X size={16} /></span>
                 <div>
                   <span className="section-kicker">ANALYSIS NEEDS ATTENTION</span>
-                  <p>{retryRequested ? "A mock retry has been queued for review." : "The structured response could not be validated. No follow-up action has been prepared."}</p>
-                  <button className="button button-secondary retry-button" type="button" onClick={() => setRetryRequested(true)} disabled={retryRequested}>
-                    {retryRequested ? "Retry requested" : "Retry analysis"}
-                  </button>
+                  <p>The mock analysis did not produce a usable result. Run AI analysis above to try with the enquiry text.</p>
                 </div>
               </div>
             ) : (
               <>
                 <div className="score-strip">
-                  <div className="score-block"><span className="score-value">{enquiry.leadScore}</span><span className="score-out-of">/ 100</span><span className="score-caption">Lead score</span></div>
+                  <div className="score-block"><span className="score-value">{leadScore}</span><span className="score-out-of">/ 100</span><span className="score-caption">Lead score</span></div>
                   <span className="score-divider" />
-                  <div className="priority-block"><span className="priority-label">PRIORITY</span><span className="priority-value"><span className="priority-indicator" />{enquiry.priority}</span></div>
-                  <p className="score-context">{enquiry.summary}</p>
+                  <div className="priority-block"><span className="priority-label">PRIORITY</span><span className="priority-value"><span className="priority-indicator" />{priority}</span></div>
+                  <p className="score-context">{qualificationSummary}</p>
                 </div>
 
                 <div className="info-grid">
-                  <InfoTile label="Project type" value={enquiry.projectType} icon={<BriefcaseBusiness size={15} />} />
-                  <InfoTile label="Approx. budget" value={enquiry.budget} icon={<span className="currency-icon">$</span>} />
-                  <InfoTile label="Desired timeline" value={enquiry.timeline} icon={<Clock3 size={15} />} />
+                  <InfoTile label="Project type" value={projectType} icon={<BriefcaseBusiness size={15} />} />
+                  <InfoTile label="Approx. budget" value={budget} icon={<span className="currency-icon">{liveAnalysis ? currencyMark(liveAnalysis.budgetRange.currency) : "$"}</span>} />
+                  <InfoTile label="Desired timeline" value={timeline} icon={<Clock3 size={15} />} />
                 </div>
 
                 <div className="analysis-section">
-                  <div className="subsection-heading"><h3>Extracted requirements</h3><span className="count-label">{enquiry.requirements.length} identified</span></div>
+                  <div className="subsection-heading"><h3>Extracted requirements</h3><span className="count-label">{requirements.length} identified</span></div>
                   <div className="requirements-list">
-                    {enquiry.requirements.map((requirement) => (
+                    {requirements.map((requirement) => (
                       <div className="requirement-row" key={requirement.label}>
                         <span className="requirement-check"><Check size={13} /></span><span className="requirement-label">{requirement.label}</span><span className="requirement-value">{requirement.value}</span>
                       </div>
@@ -164,9 +261,9 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
                 </div>
 
                 <div className="missing-section">
-                  <div className="subsection-heading"><h3>Still to clarify</h3><span className="count-label">{enquiry.missingInformation.length} questions</span></div>
+                  <div className="subsection-heading"><h3>Still to clarify</h3><span className="count-label">{missingInformation.length} questions</span></div>
                   <div className="missing-list">
-                    {enquiry.missingInformation.map((item, index) => (
+                    {missingInformation.map((item, index) => (
                       <div className="missing-row" key={item.field}><span className="missing-index">0{index + 1}</span><span>{item.question}</span><span className={`missing-priority priority-${item.priority}`}>{item.priority}</span></div>
                     ))}
                   </div>
@@ -174,13 +271,13 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
 
                 <div className="recommendation">
                   <span className="recommendation-icon"><ArrowUpRight size={16} /></span>
-                  <div><span className="section-kicker">RECOMMENDED NEXT STEP</span><p>{enquiry.recommendedNextAction}</p></div>
+                  <div><span className="section-kicker">RECOMMENDED NEXT STEP</span><p>{recommendedNextAction}</p></div>
                 </div>
               </>
             )}
           </section>
 
-          {!analysisFailed && <section className="panel action-panel" aria-labelledby="action-heading">
+          {enquiry.analysisStatus !== "failed" && <section className="panel action-panel" aria-labelledby="action-heading">
             <div className="section-heading action-heading">
               <div className="section-title-wrap">
                 <span className="action-icon"><Send size={15} /></span>
@@ -188,7 +285,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
               </div>
               <span className={`proposal-state${actionState !== "awaiting" ? ` proposal-${actionState}` : ""}`}>{actionState === "awaiting" ? "Needs approval" : actionState === "approved" ? "Approved" : "Cancelled"}</span>
             </div>
-            <div className="action-recipient"><span>TO</span><strong>{enquiry.contactName}</strong><span className="recipient-email">&lt;{enquiry.email}&gt;</span></div>
+            <div className="action-recipient"><span>TO</span><strong>{contactName}</strong><span className="recipient-email">&lt;{contactEmail}&gt;</span></div>
             <div className="action-subject"><span>SUBJECT</span>{enquiry.proposedAction.subject}</div>
             {isEditing ? (
               <label className="draft-editor"><span className="sr-only">Edit proposed email</span><textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} rows={8} /></label>
@@ -236,7 +333,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
             <ol className="timeline-list">{events.map((event, index) => <TimelineItem key={event.id} event={event} isLast={index === events.length - 1} />)}</ol>
             <Link className="activity-link" href="/activity"><span>View full history</span><ChevronRight size={14} /></Link>
           </section>
-          <div className="analysis-footnote"><ShieldCheck size={15} /> {analysisFailed ? "Review the analysis before taking action" : "AI output validated before review"}</div>
+          <div className="analysis-footnote"><ShieldCheck size={15} /> {liveAnalysis ? "Live analysis validated · not saved" : analysisFailed ? "Run AI analysis to replace this mock failure" : "Mock analysis shown until you run AI analysis"}</div>
         </aside>
       </div>
       <footer className="page-footnote"><span><span className="footnote-dot" />Mock enquiry</span><span>Analysis generated {enquiry.receivedAt}</span></footer>

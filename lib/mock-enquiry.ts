@@ -1,13 +1,8 @@
-export interface Requirement {
-  label: string;
-  value: string;
-}
+import type { LeadAnalysis } from "@/lib/lead-analysis-schema";
 
-export interface MissingInformation {
-  field: string;
-  question: string;
-  priority: "low" | "medium" | "high";
-}
+export type Requirement = LeadAnalysis["requirements"][number];
+
+export type MissingInformation = LeadAnalysis["missingInformation"][number];
 
 export interface ActivityEvent {
   id: string;
