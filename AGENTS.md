@@ -11,6 +11,7 @@ Rules for contributors:
 - Prefer small, focused changes that can be validated independently.
 - Preserve strong TypeScript type safety throughout implementation.
 - Validate at system boundaries. Treat all external input, especially LLM output, as untrusted.
+- Add brief comments for non-obvious logic, architecture, validation, AI/data flow, and safeguards. Longer React components should explain major state/data-flow sections, important event handlers, and major JSX regions; avoid comments on obvious line-by-line behaviour or markup.
 - Keep AI recommendations and tool requests separate from application execution.
 - Application code must validate and authorize any model-generated action before it is executed.
 - Consequential actions must follow the human-approval model described in the specification.

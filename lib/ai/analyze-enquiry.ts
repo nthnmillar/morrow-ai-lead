@@ -26,6 +26,7 @@ const analysisInstructions = [
   "Write a concise qualification summary and one practical next step. Do not include tools, actions, or execution instructions.",
 ].join(" ");
 
+// Derive Gemini's output contract from the same Zod schema used for application validation.
 const analysisResponseSchema = z.toJSONSchema(LeadAnalysisSchema, { target: "draft-7" });
 const maxProviderRetries = 2;
 
@@ -45,6 +46,7 @@ export async function analyzeEnquiryText(originalText: string): Promise<LeadAnal
   const client = new GoogleGenAI({ apiKey });
   let response: Awaited<ReturnType<typeof client.interactions.create>> | null = null;
 
+  // Disable SDK retries so only explicitly classified transient HTTP failures are retried.
   for (let attempt = 1; attempt <= maxProviderRetries + 1; attempt += 1) {
     const requestStartedAt = performance.now();
     try {
@@ -73,6 +75,7 @@ export async function analyzeEnquiryText(originalText: string): Promise<LeadAnal
       const isTransient = error instanceof ApiError
         && (error.status === 429 || [500, 502, 503, 504].includes(error.status));
 
+      // Configuration, authentication, and request errors are not transient.
       if (!isTransient || attempt > maxProviderRetries) {
         throw error;
       }

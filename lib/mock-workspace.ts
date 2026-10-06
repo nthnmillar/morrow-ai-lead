@@ -40,6 +40,7 @@ export interface WorkspaceActivityEvent {
   occurredAt: string;
 }
 
+// These fixtures demonstrate queue states; they are not persisted workflow records.
 export const mockEnquiries: WorkspaceEnquiry[] = [
   {
     ...mockEnquiry,
@@ -218,6 +219,7 @@ export const mockEnquiries: WorkspaceEnquiry[] = [
   },
 ];
 
+// The history feed is separately seeded and does not update with detail-page local actions.
 export const mockWorkspaceActivity: WorkspaceActivityEvent[] = [
   { id: "2048-received", enquiryId: "ENQ-2048", type: "received", title: "Enquiry received", detail: "Alder & Ash Furnishings sent a website enquiry.", occurredAt: "2026-10-05T09:42:00" },
   { id: "2048-analysis", enquiryId: "ENQ-2048", type: "analysis_started", title: "Analysis started", detail: "The enquiry was prepared for structured review.", occurredAt: "2026-10-05T09:43:00" },

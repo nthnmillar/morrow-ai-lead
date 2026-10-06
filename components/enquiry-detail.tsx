@@ -91,15 +91,20 @@ function formatBudgetRange(budget: LeadAnalysis["budgetRange"]) {
   return budget.min !== null ? `From ${formatAmount(budget.min)}` : `Up to ${formatAmount(budget.max as number)}`;
 }
 
+// Presents one enquiry's source, analysis, proposed action, and local review history.
+// The server page supplies a fixture; live AI output only replaces its analysis display in client state.
 export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
+  // Review controls and draft edits are local prototype state; only analysis calls the server.
   const [actionState, setActionState] = useState<ActionState>(enquiry.actionStatus ?? "awaiting");
   const [isEditing, setIsEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(enquiry.proposedAction.body);
   const [events, setEvents] = useState(enquiry.activity);
-  // Keep live analysis local until a later stage adds persistence.
+  // Live results replace seeded analysis for this visit only; refresh returns to fixture data.
   const [liveAnalysis, setLiveAnalysis] = useState<LeadAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+
+  // Prefer validated live fields individually, falling back to the fixture when a model value is null.
   const analysisFailed = enquiry.analysisStatus === "failed" && liveAnalysis === null;
   const companyName = liveAnalysis?.companyName ?? enquiry.companyName;
   const contactName = liveAnalysis?.contactName ?? enquiry.contactName;
@@ -114,6 +119,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
   const missingInformation = liveAnalysis?.missingInformation ?? enquiry.missingInformation;
   const recommendedNextAction = liveAnalysis?.recommendedNextStep ?? enquiry.recommendedNextAction;
 
+  // Validate source text, call the same-origin API, then validate its response before rendering it.
   async function runAnalysis() {
     setAnalysisError(null);
     const request = AnalyzeEnquiryRequestSchema.safeParse({ originalText: enquiry.originalText });
@@ -154,7 +160,9 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
     }
   }
 
+  // Simulate the review decision and timeline update; no email or external action is executed.
   function updateAction(nextState: Exclude<ActionState, "awaiting">) {
+    // Approval/cancellation updates this prototype's local presentation; it does not execute an action.
     setActionState(nextState);
     setIsEditing(false);
     setEvents((current) => [
@@ -175,6 +183,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
 
   return (
     <>
+      {/* Enquiry identity and current review status */}
       <div className="page-heading">
         <div>
           <div className="eyebrow">ENQUIRY DETAIL <span>/</span> {enquiry.id}</div>
@@ -191,6 +200,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
 
       <div className="content-grid">
         <div className="primary-column">
+          {/* Contact identity uses the derived live-or-fixture values; source text stays separate below. */}
           <section className="panel contact-panel" aria-labelledby="contact-heading">
             <div className="contact-identity">
               <div className="company-avatar">{initials(companyName)}</div>
@@ -202,6 +212,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
             <div className="contact-meta"><span className="source-label"><Inbox size={14} /> {enquiry.source}</span><span className="meta-separator" /><span>Received {enquiry.receivedAt}</span></div>
           </section>
 
+          {/* Seeded analysis is shown until a validated live result is available. */}
           <section className="panel analysis-panel" aria-labelledby="analysis-heading">
             <div className="section-heading analysis-heading">
               <div className="section-title-wrap">
@@ -277,6 +288,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
             )}
           </section>
 
+          {/* Human review controls act on a display-only proposal in this prototype. */}
           {enquiry.analysisStatus !== "failed" && <section className="panel action-panel" aria-labelledby="action-heading">
             <div className="section-heading action-heading">
               <div className="section-title-wrap">
@@ -315,6 +327,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
         </div>
 
         <aside className="secondary-column">
+          {/* Original enquiry text is preserved separately from the generated analysis. */}
           <section className="panel original-panel" aria-labelledby="original-heading">
             <div className="section-heading compact-heading">
               <div className="section-title-wrap"><span className="document-icon"><FileText size={16} /></span><div><div className="section-kicker">SOURCE MATERIAL</div><h2 id="original-heading">Original enquiry</h2></div></div>
@@ -325,6 +338,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
             <span className="message-source"><Mail size={14} /> {enquiry.source}</span>
           </section>
 
+          {/* This page-local timeline is illustrative and is not persisted. */}
           <section className="panel activity-panel" aria-labelledby="activity-heading">
             <div className="section-heading compact-heading">
               <div className="section-title-wrap"><span className="activity-icon"><Activity size={16} /></span><div><div className="section-kicker">PROCESS HISTORY</div><h2 id="activity-heading">Activity</h2></div></div>

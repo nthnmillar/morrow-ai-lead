@@ -51,12 +51,15 @@ function formatTime(value: string) {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(value));
 }
 
+// Renders the workspace-wide activity feed from seeded events and enquiry fixtures.
 export function ActivityHistory() {
   const [filter, setFilter] = useState<ActivityFilter>("all");
+  // Filter first, then sort newest-first before grouping the visible events by day.
   const sortedEvents = [...mockWorkspaceActivity]
     .filter((event) => matchesFilter(event.type, filter))
     .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt));
   const enquiriesById = new Map(mockEnquiries.map((enquiry) => [enquiry.id, enquiry]));
+  // Group by the ISO date prefix so events from the same calendar day share a section.
   const groupedEvents = sortedEvents.reduce<Record<string, typeof sortedEvents>>((groups, event) => {
     const date = event.occurredAt.slice(0, 10);
     groups[date] ??= [];
@@ -66,6 +69,7 @@ export function ActivityHistory() {
 
   return (
     <>
+      {/* Heading count reflects the fixture total; the history section shows filtered events. */}
       <div className="page-heading dashboard-heading">
         <div>
           <div className="eyebrow">NORTHLINE STUDIO <span>/</span> WORKSPACE</div>
@@ -75,6 +79,7 @@ export function ActivityHistory() {
         <div className="queue-summary"><span className="footnote-dot" />{mockWorkspaceActivity.length} recent events</div>
       </div>
 
+      {/* The filter buttons select event categories; they do not change stored activity. */}
       <section className="history-section" aria-labelledby="history-heading">
         <div className="history-toolbar">
           <div>
@@ -90,6 +95,7 @@ export function ActivityHistory() {
           </div>
         </div>
 
+        {/* Group headings and event details are derived from the filtered, sorted fixture list. */}
         <div className="history-feed">
           {Object.entries(groupedEvents).map(([date, events]) => (
             <section className="history-day" key={date} aria-label={formatDate(`${date}T12:00:00`)}>

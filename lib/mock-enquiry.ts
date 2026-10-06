@@ -1,5 +1,6 @@
 import type { LeadAnalysis } from "@/lib/lead-analysis-schema";
 
+// Reuse schema-inferred item types so seeded examples stay aligned with live analysis.
 export type Requirement = LeadAnalysis["requirements"][number];
 
 export type MissingInformation = LeadAnalysis["missingInformation"][number];
@@ -27,6 +28,7 @@ export interface MockEnquiry {
   requirements: Requirement[];
   missingInformation: MissingInformation[];
   recommendedNextAction: string;
+  // Display-only proposal; approval is local and does not send this draft.
   proposedAction: {
     type: "draft_reply";
     subject: string;

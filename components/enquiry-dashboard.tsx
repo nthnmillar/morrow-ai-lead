@@ -27,10 +27,14 @@ function formatReceivedAt(value: string) {
   return value.replace(/^today at /i, "Today, ").replace(/^yesterday at /i, "Yesterday, ");
 }
 
+// Shows either the attention-focused overview or the full mock enquiry queue.
+// The view prop chooses the initial filter; search and filter changes stay in component state.
 export function EnquiryDashboard({ view = "enquiries" }: { view?: "overview" | "enquiries" }) {
   const [filter, setFilter] = useState<QueueFilter>(view === "overview" ? "attention" : "all");
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
+
+  // Filter fixture data locally; attention means every workflow status except responded.
   const visibleEnquiries = mockEnquiries.filter((enquiry) => {
     const matchesFilter = filter === "all"
       || (filter === "attention" ? enquiry.workflowStatus !== "responded" : enquiry.workflowStatus === filter);
@@ -40,6 +44,7 @@ export function EnquiryDashboard({ view = "enquiries" }: { view?: "overview" | "
 
   return (
     <>
+      {/* Queue title and counts reflect the selected view and filtered fixture data. */}
       <div className="page-heading dashboard-heading">
         <div>
           <div className="eyebrow">NORTHLINE STUDIO <span>/</span> WORKSPACE</div>
@@ -49,6 +54,7 @@ export function EnquiryDashboard({ view = "enquiries" }: { view?: "overview" | "
         <div className="queue-summary"><span className="footnote-dot" />{view === "overview" ? `${mockEnquiries.filter((enquiry) => enquiry.workflowStatus !== "responded").length} need attention` : `${mockEnquiries.length} recent enquiries`}</div>
       </div>
 
+      {/* Search and status selection update only the local queue view. */}
       <section className="enquiry-list-section" id="enquiry-list" aria-labelledby="enquiry-list-heading">
         <div className="queue-toolbar">
           <div>
@@ -70,6 +76,7 @@ export function EnquiryDashboard({ view = "enquiries" }: { view?: "overview" | "
           </div>
         </div>
 
+        {/* Each queue row links to the corresponding fixture-backed detail route. */}
         <div className="enquiry-list">
           {visibleEnquiries.map((enquiry) => (
             <Link className="enquiry-row" href={`/enquiries/${enquiry.id}`} key={enquiry.id}>

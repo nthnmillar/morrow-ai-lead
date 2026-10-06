@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     return errorResponse(400, "invalid_request", "Send valid JSON containing the enquiry text.");
   }
 
-  // Treat browser input as untrusted even though the page sends a typed object.
+  // Treat browser input as untrusted even though the page validates it before sending.
   const parsedRequest = AnalyzeEnquiryRequestSchema.safeParse(requestBody);
   if (!parsedRequest.success) {
     return errorResponse(400, "invalid_request", "Enquiry text must be non-empty and no longer than 12,000 characters.");
@@ -48,6 +48,7 @@ export async function POST(request: Request) {
       return errorResponse(502, "analysis_unavailable", "The analysis result could not be validated. Please try again.");
     }
 
+    // Keep provider diagnostics server-side while returning the stable API error contract.
     const detail = error instanceof Error ? { name: error.name, message: error.message } : "Unknown provider error";
     console.error("Lead analysis provider request failed.", detail);
     return errorResponse(502, "analysis_unavailable", "AI analysis could not be completed. Please try again.");

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const PrioritySchema = z.enum(["low", "medium", "high"]);
 
+// Strict objects reject provider-added fields; nullable values represent facts absent from source text.
 export const LeadAnalysisSchema = z.object({
   companyName: z.string().nullable(),
   contactName: z.string().nullable(),
