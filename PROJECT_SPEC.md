@@ -304,7 +304,7 @@ Preferred stack:
 - Tailwind CSS
 - Supabase or PostgreSQL
 - Zod
-- OpenAI API
+- Google Gemini API
 - Resend for email
 
 Recommended structure:

@@ -1,4 +1,8 @@
-import { analyzeEnquiryText, AnalysisConfigurationError } from "@/lib/ai/analyze-enquiry";
+import {
+  analyzeEnquiryText,
+  AnalysisConfigurationError,
+  AnalysisOutputError,
+} from "@/lib/ai/analyze-enquiry";
 import {
   AnalyzeEnquiryErrorSchema,
   AnalyzeEnquiryRequestSchema,
@@ -36,7 +40,12 @@ export async function POST(request: Request) {
     return Response.json(response.data);
   } catch (error) {
     if (error instanceof AnalysisConfigurationError) {
-      return errorResponse(503, "missing_configuration", "AI analysis is not configured. Set OPENAI_API_KEY and OPENAI_MODEL on the server.");
+      return errorResponse(503, "missing_configuration", "AI analysis is not configured. Set GEMINI_API_KEY and GEMINI_MODEL on the server.");
+    }
+
+    if (error instanceof AnalysisOutputError) {
+      console.error("Lead analysis failed structured output validation.", error.message);
+      return errorResponse(502, "analysis_unavailable", "The analysis result could not be validated. Please try again.");
     }
 
     const detail = error instanceof Error ? { name: error.name, message: error.message } : "Unknown provider error";
