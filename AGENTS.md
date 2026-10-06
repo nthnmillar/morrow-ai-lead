@@ -17,6 +17,7 @@ Rules for contributors:
 - Consequential actions must follow the human-approval model described in the specification.
 - Keep secrets server-side and never expose them to the client.
 - Run the appropriate linting, type checking, and tests after implementation changes.
+- Use Yarn for dependency management and project scripts. Do not use npm, do not create or modify `package-lock.json`, and prefer the existing Yarn scripts from `package.json` for lint, typecheck, tests, and builds.
 - Do not silently modify [PROJECT_SPEC.md](PROJECT_SPEC.md) to justify a design decision.
 - Only change the product specification when explicitly instructed to do so.
 

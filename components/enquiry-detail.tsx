@@ -119,7 +119,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
   const missingInformation = liveAnalysis?.missingInformation ?? enquiry.missingInformation;
   const recommendedNextAction = liveAnalysis?.recommendedNextStep ?? enquiry.recommendedNextAction;
 
-  // Validate source text, call the same-origin API, then validate its response before rendering it.
+  // Requests server-side AI analysis for the enquiry text, validates request and response contracts, and updates local state to render live analysis in place of fixture data.
   async function runAnalysis() {
     setAnalysisError(null);
     const request = AnalyzeEnquiryRequestSchema.safeParse({ originalText: enquiry.originalText });
