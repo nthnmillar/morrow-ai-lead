@@ -91,20 +91,27 @@ function formatBudgetRange(budget: LeadAnalysis["budgetRange"]) {
   return budget.min !== null ? `From ${formatAmount(budget.min)}` : `Up to ${formatAmount(budget.max as number)}`;
 }
 
-// Presents one enquiry's source, analysis, proposed action, and local review history.
-// The server page supplies a fixture; live AI output only replaces its analysis display in client state.
-export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
+// Presents one enquiry's source, restored analysis, proposed action, and local review history.
+export function EnquiryDetail({
+  enquiry,
+  initialAnalysis = null,
+  persistenceError = null,
+}: {
+  enquiry: WorkspaceEnquiry;
+  initialAnalysis?: LeadAnalysis | null;
+  persistenceError?: string | null;
+}) {
   // Review controls and draft edits are local prototype state; only analysis calls the server.
   const [actionState, setActionState] = useState<ActionState>(enquiry.actionStatus ?? "awaiting");
   const [isEditing, setIsEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(enquiry.proposedAction.body);
   const [events, setEvents] = useState(enquiry.activity);
-  // Live results replace seeded analysis for this visit only; refresh returns to fixture data.
-  const [liveAnalysis, setLiveAnalysis] = useState<LeadAnalysis | null>(null);
+  // A restored server result initializes the view; later successful runs replace it in local state.
+  const [liveAnalysis, setLiveAnalysis] = useState<LeadAnalysis | null>(initialAnalysis);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  // Prefer validated live fields individually, falling back to the fixture when a model value is null.
+  // Prefer validated saved/live fields individually, falling back to the fixture when a model value is null.
   const analysisFailed = enquiry.analysisStatus === "failed" && liveAnalysis === null;
   const companyName = liveAnalysis?.companyName ?? enquiry.companyName;
   const contactName = liveAnalysis?.contactName ?? enquiry.contactName;
@@ -119,10 +126,13 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
   const missingInformation = liveAnalysis?.missingInformation ?? enquiry.missingInformation;
   const recommendedNextAction = liveAnalysis?.recommendedNextStep ?? enquiry.recommendedNextAction;
 
-  // Requests server-side AI analysis for the enquiry text, validates request and response contracts, and updates local state to render live analysis in place of fixture data.
+  // Requests server-side analysis and persistence, then updates local state after the saved response validates.
   async function runAnalysis() {
     setAnalysisError(null);
-    const request = AnalyzeEnquiryRequestSchema.safeParse({ originalText: enquiry.originalText });
+    const request = AnalyzeEnquiryRequestSchema.safeParse({
+      enquiryId: enquiry.id,
+      originalText: enquiry.originalText,
+    });
 
     if (!request.success) {
       setAnalysisError("This enquiry does not contain usable text to analyse.");
@@ -131,7 +141,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
 
     setIsAnalyzing(true);
     try {
-      // Send source text only; contact details remain in the existing enquiry fixture.
+      // Send the stable fixture ID with its source text; the server resolves trusted enquiry details.
       const response = await fetch("/api/ai/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -200,7 +210,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
 
       <div className="content-grid">
         <div className="primary-column">
-          {/* Contact identity uses the derived live-or-fixture values; source text stays separate below. */}
+          {/* Contact identity uses the derived analysis-or-fixture values; source text stays separate below. */}
           <section className="panel contact-panel" aria-labelledby="contact-heading">
             <div className="contact-identity">
               <div className="company-avatar">{initials(companyName)}</div>
@@ -212,7 +222,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
             <div className="contact-meta"><span className="source-label"><Inbox size={14} /> {enquiry.source}</span><span className="meta-separator" /><span>Received {enquiry.receivedAt}</span></div>
           </section>
 
-          {/* Seeded analysis is shown until a validated live result is available. */}
+          {/* Persisted analysis takes precedence; fixtures remain visible until the first successful save. */}
           <section className="panel analysis-panel" aria-labelledby="analysis-heading">
             <div className="section-heading analysis-heading">
               <div className="section-title-wrap">
@@ -220,7 +230,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
                 <div>
                   <div className="section-kicker">AI ANALYSIS {analysisFailed
                     ? <span className="analysis-state-failed">Needs retry</span>
-                    : <span className="validated-label"><BadgeCheck size={13} />{liveAnalysis ? "Live result" : "Validated"}</span>}
+                            : <span className="validated-label"><BadgeCheck size={13} />{liveAnalysis ? "Saved result" : "Validated"}</span>}
                   </div>
                   <h2 id="analysis-heading">{liveAnalysis?.qualificationSummary ?? (enquiry.id === "ENQ-2048" ? "A qualified project with clear intent" : enquiry.summary)}</h2>
                 </div>
@@ -233,7 +243,8 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
                 {isAnalyzing ? <LoaderCircle className="analysis-spinner" size={15} /> : <Sparkles size={15} />}
                 {isAnalyzing ? "Analysing..." : liveAnalysis ? "Analyse again" : "Analyse with AI"}
               </button>
-              {liveAnalysis && <span className="analysis-local-note">Live result · not saved</span>}
+              {persistenceError && <p className="analysis-request-error" role="alert">{persistenceError}</p>}
+              {liveAnalysis && <span className="analysis-local-note">Saved · restored on the next visit</span>}
             </div>
             {analysisError && <p className="analysis-request-error" role="alert">{analysisError}</p>}
 
@@ -347,7 +358,7 @@ export function EnquiryDetail({ enquiry }: { enquiry: WorkspaceEnquiry }) {
             <ol className="timeline-list">{events.map((event, index) => <TimelineItem key={event.id} event={event} isLast={index === events.length - 1} />)}</ol>
             <Link className="activity-link" href="/activity"><span>View full history</span><ChevronRight size={14} /></Link>
           </section>
-          <div className="analysis-footnote"><ShieldCheck size={15} /> {liveAnalysis ? "Live analysis validated · not saved" : analysisFailed ? "Run AI analysis to replace this mock failure" : "Mock analysis shown until you run AI analysis"}</div>
+          <div className="analysis-footnote"><ShieldCheck size={15} /> {liveAnalysis ? "Saved analysis · validated before persistence" : analysisFailed ? "Run AI analysis to replace this mock failure" : "Mock analysis shown until you run AI analysis"}</div>
         </aside>
       </div>
       <footer className="page-footnote"><span><span className="footnote-dot" />Mock enquiry</span><span>Analysis generated {enquiry.receivedAt}</span></footer>

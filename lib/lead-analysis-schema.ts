@@ -35,6 +35,7 @@ export const LeadAnalysisSchema = z.object({
 
 // Structured Outputs require every key; nullable values represent facts absent from the source.
 export const AnalyzeEnquiryRequestSchema = z.object({
+  enquiryId: z.string().regex(/^ENQ-\d{4}$/),
   originalText: z.string().trim().min(1).max(12000),
 }).strict();
 
@@ -44,9 +45,15 @@ export const AnalyzeEnquiryResponseSchema = z.object({
 
 export const AnalyzeEnquiryErrorSchema = z.object({
   error: z.object({
-    code: z.enum(["invalid_request", "missing_configuration", "analysis_unavailable"]),
+    code: z.enum(["invalid_request", "missing_configuration", "analysis_unavailable", "persistence_unavailable"]),
     message: z.string(),
   }).strict(),
 }).strict();
 
 export type LeadAnalysis = z.infer<typeof LeadAnalysisSchema>;
+
+// Persisted JSON remains untrusted when restored, so it must satisfy the same application contract.
+export function parsePersistedAnalysis(value: unknown): LeadAnalysis | null {
+  const parsed = LeadAnalysisSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
