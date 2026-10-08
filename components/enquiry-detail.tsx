@@ -31,12 +31,14 @@ import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import type { ActivityEvent } from "@/lib/mock-enquiry";
 import type { WorkspaceEnquiry } from "@/lib/mock-workspace";
+import type { PersistedActivityEvent } from "@/lib/activity-event-schema";
 import {
   AnalyzeEnquiryErrorSchema,
   AnalyzeEnquiryRequestSchema,
   type LeadAnalysis,
 } from "@/lib/lead-analysis-schema";
 import { AnalyzeEnquiryWorkflowResponseSchema } from "@/lib/analysis-workflow-schema";
+import { executionSuccessMessage, type EmailExecutionMode } from "@/lib/execution-schema";
 
 function InfoTile({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
   return (
@@ -61,6 +63,29 @@ function TimelineItem({ event, isLast }: { event: ActivityEvent; isLast: boolean
       </div>
     </li>
   );
+}
+
+const persistedEventTitles: Record<PersistedActivityEvent["type"], string> = {
+  validated: "Analysis validated",
+  action_proposed: "Action proposed",
+  edited: "Action edited",
+  approved: "Action approved",
+  cancelled: "Action cancelled",
+  email_sent: "Test email sent",
+  email_simulated: "Email simulated",
+  email_failed: "Email execution issue",
+};
+
+function toTimelineEvents(events: PersistedActivityEvent[]): ActivityEvent[] {
+  return [...events]
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))
+    .map((event, index, sorted) => ({
+      id: event.id,
+      title: persistedEventTitles[event.type],
+      detail: event.summary,
+      time: new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(event.createdAt)),
+      status: index === sorted.length - 1 ? "current" : "complete",
+    }));
 }
 
 function initials(name: string) {
@@ -101,11 +126,15 @@ export function EnquiryDetail({
   enquiry,
   initialAnalysis = null,
   initialAction = null,
+  initialEvents = [],
+  executionMode,
   persistenceError = null,
 }: {
   enquiry: WorkspaceEnquiry;
   initialAnalysis?: LeadAnalysis | null;
   initialAction?: PersistedAction | null;
+  initialEvents?: PersistedActivityEvent[];
+  executionMode: EmailExecutionMode;
   persistenceError?: string | null;
 }) {
   // Persisted Action state is the durable source; local text is only the current editor value.
@@ -114,7 +143,7 @@ export function EnquiryDetail({
   const [draftBody, setDraftBody] = useState(initialAction?.payload.body ?? enquiry.proposedAction.body);
   const [isSavingAction, setIsSavingAction] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [events, setEvents] = useState(enquiry.activity);
+  const [persistedEvents, setPersistedEvents] = useState(initialEvents);
   // A restored server result initializes the view; later successful runs replace it in local state.
   const [liveAnalysis, setLiveAnalysis] = useState<LeadAnalysis | null>(initialAnalysis);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -136,6 +165,7 @@ export function EnquiryDetail({
   const recommendedNextAction = liveAnalysis?.recommendedNextStep ?? enquiry.recommendedNextAction;
   const actionState = action?.status ?? "proposed";
   const actionBadgeState = actionState === "approved" || actionState === "cancelled" ? actionState : "awaiting";
+  const events = persistedEvents.length > 0 ? toTimelineEvents(persistedEvents) : enquiry.activity;
 
   // Requests server-side analysis and persistence, then updates local state after the saved response validates.
   async function runAnalysis() {
@@ -176,6 +206,7 @@ export function EnquiryDetail({
       setLiveAnalysis(result.data.analysis);
       setAction(result.data.action);
       setDraftBody(result.data.action.payload.body);
+      setPersistedEvents(result.data.events);
       setIsEditing(false);
     } catch {
       setAnalysisError("AI analysis could not be completed. Check your connection and try again.");
@@ -219,25 +250,8 @@ export function EnquiryDetail({
       }
       setAction(result.data.action);
       setDraftBody(result.data.action.payload.body);
+      setPersistedEvents(result.data.events);
       setIsEditing(false);
-
-      if (operation !== "save_edit") {
-        const decision = result.data.action.status;
-        setEvents((current) => [
-          ...current.map((event) => event.id === "awaiting-approval"
-            ? { ...event, status: "complete" as const, detail: "Review completed by you" }
-            : event),
-          {
-            id: `action-${decision}`,
-            title: decision === "approved" ? "Action approved" : "Action cancelled",
-            detail: decision === "approved"
-              ? "Approval saved. No email was sent."
-              : "The proposed follow-up was cancelled.",
-            time: "Just now",
-            status: "current",
-          },
-        ]);
-      }
     } catch {
       setActionError("The Action could not be saved. Check your connection and try again.");
     } finally {
@@ -256,7 +270,7 @@ export function EnquiryDetail({
         </div>
         <div className="heading-status">
           <span className={`status-badge ${analysisFailed ? "status-failed" : `status-${actionBadgeState}`}`}><span className="status-dot" />
-            {analysisFailed ? "Analysis failed" : !action ? "No saved action" : actionState === "proposed" ? "Awaiting review" : actionState === "edited" ? "Edited · awaiting review" : actionState === "approved" ? "Approved" : "Cancelled"}
+            {analysisFailed ? "Analysis failed" : !action ? "No saved action" : actionState === "proposed" ? "Awaiting review" : actionState === "edited" ? "Edited · awaiting review" : actionState === "cancelled" ? "Cancelled" : action.executionStatus === "succeeded" ? action.executionMode === "demo" ? "Approved · simulated" : "Approved · sent" : action.executionStatus === "failed" ? "Approved · failed" : "Approved · pending"}
           </span>
           <button className="icon-button more-button" type="button" aria-label="More enquiry options"><MoreHorizontal size={20} /></button>
         </div>
@@ -353,14 +367,14 @@ export function EnquiryDetail({
             )}
           </section>
 
-          {/* Human decisions persist through the server; approval deliberately performs no external action. */}
+          {/* Human approval is the only path that can claim controlled test email execution. */}
           {action && <section className="panel action-panel" aria-labelledby="action-heading">
             <div className="section-heading action-heading">
               <div className="section-title-wrap">
                 <span className="action-icon"><Send size={15} /></span>
                 <div><div className="section-kicker">PROPOSED ACTION</div><h2 id="action-heading">Draft a follow-up email</h2></div>
               </div>
-              <span className={`proposal-state${actionBadgeState !== "awaiting" ? ` proposal-${actionBadgeState}` : ""}`}>{actionState === "proposed" ? "Needs approval" : actionState === "edited" ? "Edited · needs approval" : actionState === "approved" ? "Approved" : "Cancelled"}</span>
+              <span className={`proposal-state${actionBadgeState !== "awaiting" ? ` proposal-${actionBadgeState}` : ""}`}>{actionState === "proposed" ? "Needs approval" : actionState === "edited" ? "Edited · needs approval" : actionState === "cancelled" ? "Cancelled" : action.executionStatus === "succeeded" ? action.executionMode === "demo" ? "Approved · simulated" : "Approved · sent" : action.executionStatus === "failed" ? "Approved · failed" : "Approved · pending"}</span>
             </div>
             <div className="action-recipient"><span>TO</span><strong>{action.payload.recipientName}</strong><span className="recipient-email">&lt;{action.payload.to}&gt;</span></div>
             <div className="action-subject"><span>SUBJECT</span>{action.payload.subject}</div>
@@ -373,19 +387,32 @@ export function EnquiryDetail({
               {actionState === "proposed" || actionState === "edited" ? (
                 <>
                   <div className="approval-buttons">
-                    <button className="button button-primary" type="button" onClick={() => void updateAction("approve")} disabled={isSavingAction}><CheckCircle2 size={16} /> Approve</button>
+                    <button className="button button-primary" type="button" onClick={() => void updateAction("approve")} disabled={isSavingAction}><CheckCircle2 size={16} /> {executionMode === "demo" ? "Approve & simulate" : "Approve & send test"}</button>
                     <button className={`button button-secondary${isEditing ? " is-saving" : ""}`} type="button" disabled={isSavingAction} onClick={() => isEditing ? void updateAction("save_edit") : setIsEditing(true)}><Pencil size={15} />{isEditing ? "Save edits" : "Edit"}</button>
                     <button className="button button-text" type="button" onClick={() => void updateAction("cancel")} disabled={isSavingAction}><X size={15} /> Cancel</button>
                   </div>
-                  <span className="approval-note"><ShieldCheck size={14} /> {isSavingAction ? "Saving decision…" : "Approval saves the decision only; nothing is sent."}</span>
+                  <span className="approval-note"><ShieldCheck size={14} /> {isSavingAction ? "Saving and executing safely…" : executionMode === "demo" ? "Public demo execution sends no email." : "Delivery is redirected to the configured test inbox."}</span>
                 </>
               ) : (
-                <div className={`action-result result-${actionState}`}>
-                  {actionState === "approved" ? <CheckCircle2 size={16} /> : <X size={16} />}
-                  <span>{actionState === "approved"
-                    ? "Approval saved. No email was sent."
-                    : "This proposed action was cancelled."}</span>
-                </div>
+                <>
+                  <div className={`action-result ${actionState === "approved" && action.executionStatus !== "succeeded" ? "result-cancelled" : `result-${actionState}`}`}>
+                    {actionState === "approved" && action.executionStatus === "succeeded" ? <CheckCircle2 size={16} /> : <X size={16} />}
+                    <span>{actionState === "cancelled"
+                      ? "This proposed action was cancelled; no email was sent."
+                      : action.executionStatus === "succeeded"
+                        ? executionSuccessMessage(action.executionMode ?? executionMode)
+                        : action.executionStatus === "failed"
+                          ? "Approved, but controlled email execution failed."
+                          : action.errorMessage === "outcome_unknown"
+                            ? "Approved, but delivery could not be confirmed. Automatic retry is blocked."
+                            : "Approved and ready for controlled test execution."}</span>
+                  </div>
+                  {actionState === "approved" && (action.executionStatus === "failed" || (action.executionStatus === "pending" && action.executionStartedAt === null)) && (
+                    <button className="button button-secondary retry-button" type="button" onClick={() => void updateAction("retry_execution")} disabled={isSavingAction}>
+                      <Send size={15} /> {isSavingAction ? "Retrying…" : executionMode === "demo" ? "Execute simulation" : action.executionStatus === "failed" ? "Retry test email" : "Execute test email"}
+                    </button>
+                  )}
+                </>
               )}
             </div>
             {actionError && <p className="analysis-request-error" role="alert">{actionError}</p>}
@@ -404,10 +431,10 @@ export function EnquiryDetail({
             <span className="message-source"><Mail size={14} /> {enquiry.source}</span>
           </section>
 
-          {/* This page-local timeline is illustrative and is not persisted. */}
+          {/* Persisted audit events replace the fixture timeline once a real workflow exists. */}
           <section className="panel activity-panel" aria-labelledby="activity-heading">
             <div className="section-heading compact-heading">
-              <div className="section-title-wrap"><span className="activity-icon"><Activity size={16} /></span><div><div className="section-kicker">PROCESS HISTORY</div><h2 id="activity-heading">Activity</h2></div></div>
+              <div className="section-title-wrap"><span className="activity-icon"><Activity size={16} /></span><div><div className="section-kicker">{persistedEvents.length > 0 ? "SAVED ACTIVITY" : "FIXTURE HISTORY"}</div><h2 id="activity-heading">Activity</h2></div></div>
               <button className="quiet-button" type="button" aria-label="Activity options"><MoreHorizontal size={18} /></button>
             </div>
             <ol className="timeline-list">{events.map((event, index) => <TimelineItem key={event.id} event={event} isLast={index === events.length - 1} />)}</ol>

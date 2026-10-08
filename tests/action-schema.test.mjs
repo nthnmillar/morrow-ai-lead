@@ -26,6 +26,10 @@ const validAction = {
   updatedAt: "2026-10-08T05:00:00.000Z",
   approvedByUserAt: null,
   rejectedAt: null,
+  executionMode: null,
+  executionStatus: null,
+  executionStartedAt: null,
+  providerMessageId: null,
   executedAt: null,
   errorMessage: null,
 };
@@ -52,6 +56,38 @@ test("rejects decision timestamps that contradict status", () => {
 test("keeps edited draft content schema-valid", () => {
   const edited = DraftReplyPayloadSchema.safeParse({ ...validPayload, body: "Hi Maya,\n\nCould we confirm the available assets?" });
   assert.equal(edited.success, true);
+});
+
+test("validates successful and failed execution states", () => {
+  const approved = {
+    ...validAction,
+    status: "approved",
+    approvedByUserAt: validAction.updatedAt,
+    executionMode: "resend",
+    executionStatus: "succeeded",
+    executionStartedAt: validAction.updatedAt,
+    providerMessageId: "provider-message-id",
+    executedAt: validAction.updatedAt,
+  };
+  assert.notEqual(parsePersistedAction(approved), null);
+  assert.equal(parsePersistedAction({ ...approved, providerMessageId: null }), null);
+
+  const simulated = {
+    ...approved,
+    executionMode: "demo",
+    providerMessageId: null,
+  };
+  assert.notEqual(parsePersistedAction(simulated), null);
+  assert.equal(parsePersistedAction({ ...simulated, providerMessageId: "not-a-demo-result" }), null);
+
+  const failed = {
+    ...approved,
+    executionStatus: "failed",
+    providerMessageId: null,
+    executedAt: null,
+    errorMessage: "configuration_missing",
+  };
+  assert.notEqual(parsePersistedAction(failed), null);
 });
 
 test("allows review transitions and rejects changes to terminal Actions", () => {

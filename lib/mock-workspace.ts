@@ -29,7 +29,9 @@ export type WorkspaceActivityType =
   | "approved"
   | "edited"
   | "cancelled"
-  | "email_sent";
+  | "email_sent"
+  | "email_simulated"
+  | "email_failed";
 
 export interface WorkspaceActivityEvent {
   id: string;

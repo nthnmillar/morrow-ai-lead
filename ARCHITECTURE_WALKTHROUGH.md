@@ -1,17 +1,30 @@
 # Architecture walkthrough
 
-This guide describes the implementation in this repository now. Stage 2C persists a validated proposed Action beside each new Analysis and persists human edit/approve/cancel decisions. External execution, email, and durable activity events remain future work.
+This guide describes Stage 2E as implemented now: public visitors receive isolated anonymous workflow state, while approved `draft_reply` Actions execute through either a no-delivery demo adapter or the existing private Resend test path.
+
+## Stage 2E public-safety boundary
+
+`proxy.ts` issues a random UUID in an HttpOnly, same-origin cookie (`SameSite=Lax`, `Secure` in production). Server Components and Route Handlers resolve that cookie; API bodies never accept a session ID. The persistence boundary includes `demo_session_id` in every mutable Analysis, Action, and ActivityEvent query or write, and the action RPCs require the same session before editing, approving, cancelling, executing, or retrying. Shared fixture Enquiries remain reusable source records. This mechanism isolates anonymous portfolio visitors; it is deliberately not identity, authorization, or authentication.
+
+`EMAIL_EXECUTION_MODE` accepts only `demo` or `resend`. Missing and invalid values resolve to `demo`, so deployment omission cannot enable delivery.
+
+- **PUBLIC:** human approval → atomic claim → demo adapter → successful result → `email_simulated` → no Resend call.
+- **PRIVATE TEST:** human approval → atomic claim → Resend adapter → test inbox → `email_sent` or safe failure state.
+
+Both paths use the same Action state machine and database finalization RPC. Successful simulation has `execution_mode=demo`, no provider message ID, and the visible result `Email simulated successfully`. Resend retains its stable Action idempotency key, confirmed-failure retry, and indeterminate-outcome lock.
+
+Existing development rows are retained with no demo session and are therefore invisible to anonymous public sessions. Automated retention is intentionally deferred for low-volume portfolio traffic.
 
 ## 1. Big picture
 
 The current application combines fixture-driven workspace screens with a persisted AI analysis flow:
 
-1. **Fixture enquiry and activity data** in `lib/mock-enquiry.ts` and `lib/mock-workspace.ts` still seed queue rows, detail-page enquiry fields, and the workspace activity feed.
+1. **Fixture enquiry data** still seeds queue rows and source fields. Fixture activity is explicitly labeled and used only until saved audit events exist.
 2. **AI analysis and proposal** run through `POST /api/ai/analyze`. Validated output is saved as an Analysis, then the application creates one validated `draft_reply` Action linked to it.
-3. **Human review** runs through `PATCH /api/actions`; valid proposed/edited Actions can be saved as edited, approved, or cancelled. Approval performs no execution.
-4. **Restored state** loads the latest Analysis and its associated Action, validates both, and passes them to `EnquiryDetail`.
+3. **Human review and execution** run through `PATCH /api/actions`. Approval atomically claims execution; only the winning request reaches the configured demo or Resend adapter.
+4. **Audit and restore** persist truthful execution results and ActivityEvents, then restore only the current demo session on refresh.
 
-React state holds the open editor and current server-confirmed values while mounted. Supabase remains the durable source for Analysis, Action payload, and review status. Activity history remains a separate seeded fixture feed.
+React state holds only the open editor and current server-confirmed values. Supabase is durable for Analysis, Action review/execution state, and ActivityEvents.
 
 ```mermaid
 flowchart LR
@@ -27,7 +40,10 @@ flowchart LR
   Gemini["Gemini API"]
   Persistence["Server-only persistence boundary<br/>lib/persistence/supabase.ts"]
   ActionSchema["PersistedActionSchema<br/>payload + transitions"]
-  Supabase[("Supabase<br/>enquiries · analyses · actions")]
+  Email["Server-only execution mode<br/>demo or private Resend"]
+  ActivitySchema["PersistedActivityEventSchema"]
+  Supabase[("Supabase<br/>enquiries · analyses · actions · activity_events")]
+  Resend["Resend"]
 
   Browser --> Routes
   Routes --> Fixtures
@@ -41,18 +57,21 @@ flowchart LR
   Provider --> AnalysisSchema
   Gemini -- "structured JSON text" --> Provider
   AnalysisSchema -->|"validated output only"| Persistence
-  Persistence -->|"save Analysis, Action, review decision"| Supabase
-  Routes -->|"load newest Analysis + Action"| Persistence
+  Persistence -->|"save workflow, execution result, audit"| Supabase
+  Routes -->|"load newest state + audit"| Persistence
   Persistence -->|"validate persisted JSON"| AnalysisSchema
   Persistence --> ActionSchema
+  Persistence --> ActivitySchema
+  API -->|"approved claim only"| Email
+  Email -.->|"resend mode only<br/>stable idempotency key"| Resend
   API -->|"after save: validated state"| Client
   Client --> State
   State --> Browser
 ```
 
-The dashboard queue and activity feed remain fixture-driven. The detail page starts with fixture enquiry fields, but saved Analysis and Action state take precedence when present.
+The dashboard queue remains fixture-driven. Detail and activity pages use validated saved ActivityEvents when present and clearly label the fixture fallback.
 
-The browser communicates with the Next.js server, not directly with either external service. Secrets stay server-only. Supabase RLS remains enabled; the Action migration explicitly revokes `anon` and `authenticated` privileges and grants `service_role` only `select`, `insert`, and `update`. Database/provider failures are logged without enquiry or proposed-reply contents.
+The browser communicates only with Next.js. Gemini, Supabase, and Resend credentials plus `TEST_EMAIL_RECIPIENT` stay server-side. Logs omit enquiry and reply contents.
 
 ## 2. Exact “Analyse with AI” execution chain
 
@@ -73,7 +92,7 @@ Route validates the Analysis and constructs a validated Action
 ↓
 lib/persistence/supabase.ts inserts the validated Analysis and one proposed Action
 ↓
-Route returns validated { analysis, action }
+Route returns validated { analysis, action, events }
 ↓
 EnquiryDetail validates the response and renders persisted review controls
 ```
@@ -86,9 +105,9 @@ EnquiryDetail validates the response and renders persisted review controls
 4. **Validate at the boundary — server.** `POST()` parses and validates the body, then requires the ID and original text to match a current fixture enquiry. Browser validation is only a UX aid.
 5. **Call the provider — server.** The route invokes `analyzeEnquiryText()` with the trusted fixture text. The provider reads `GEMINI_API_KEY` and `GEMINI_MODEL` and calls Gemini's `interactions.create()`.
 6. **Request and validate structured output — server.** Gemini receives a JSON response schema derived from `LeadAnalysisSchema`. The provider requires a completed interaction, parses `output_text`, and validates the unknown result with `LeadAnalysisSchema.safeParse()`.
-7. **Validate the workflow response — server.** The route independently validates the Analysis before any persistence, then validates `{ analysis, action }` before returning.
+7. **Validate the workflow response — server.** The route independently validates the Analysis before persistence, then validates `{ analysis, action, events }` before returning.
 8. **Persist validated output and proposal — server.** `saveValidatedAnalysis()` revalidates, upserts the fixture Enquiry, inserts an Analysis, constructs an application-owned `draft_reply` from the existing fixture draft plus validated analysis key points, validates it, and inserts one linked proposed Action.
-9. **Return and store the result — server to browser.** Only after both records save does the route return `{ analysis, action }`. The client validates the combined response before updating render state.
+9. **Return and store the result — server to browser.** Only after workflow records and initial audit events save does the route return `{ analysis, action, events }`.
 10. **Render — browser.** React displays the current validated analysis. When nullable identity values are absent, the component uses the fixture identity as a fallback.
 
 ```mermaid
@@ -123,7 +142,7 @@ sequenceDiagram
       Note over API,DB: Persistence starts only after AI output passes Zod validation
       API->>DB: Save validated analysis + proposed Action
       DB-->>API: Save succeeds
-      API-->>UI: 200 JSON { analysis, action }
+      API-->>UI: 200 JSON { analysis, action, events }
       UI->>Output: Validate combined response
       UI->>UI: Set server-confirmed state
       UI-->>User: Render saved result
@@ -131,9 +150,22 @@ sequenceDiagram
   end
 ```
 
-Persistence errors use the stable `persistence_unavailable` API error and prevent unsaved state entering the UI. A separate validated `PATCH /api/actions` request saves edits or transitions `proposed|edited` to `approved|cancelled`; terminal decisions cannot be changed. No route executes email or another external action.
+Persistence errors use stable application errors. `PATCH /api/actions` saves edits/cancellation or atomically claims approval execution for the current session. Only the claimant executes: demo mode returns a simulated success without Resend; Resend mode uses `TEST_EMAIL_RECIPIENT` and `morrow-draft-reply/<action-id>` as the stable idempotency key. Success prevents all later execution. Confirmed provider failures may be retried explicitly; an unknown network outcome stays pending and locked for manual reconciliation.
 
-## 3. Important files, one by one
+## 3. Controlled approval execution chain
+
+```text
+validated approve request + server-resolved demo session
+→ database atomically sets approved + pending + execution mode and writes approval event
+→ winning request uses demo simulation or the test-only Resend path
+→ application-owned simulated / delivered / failure / indeterminate result
+→ database atomically stores result + ActivityEvent
+→ validated state returned to UI and restored on refresh
+```
+
+Concurrent clicks and HTTP retries cannot both claim an Action. A duplicate request returns the existing stored state without calling Resend. Resend's matching idempotency key is a second barrier if the same claimed request reaches the provider again.
+
+## 4. Important files, one by one
 
 ### `app/layout.tsx`
 
@@ -287,11 +319,11 @@ Persistence errors use the stable `persistence_unavailable` API error and preven
 
 **Calls / depends on:** Analysis and Action schemas; same-origin `/api/ai/analyze` and `/api/actions`; `initialAnalysis`, `initialAction`, and fixture props.
 
-**Important exports/functions/components:** `runAnalysis()` accepts only a validated saved Analysis+Action response. `updateAction()` validates editable payloads, saves edits or review decisions, and updates the UI only from a validated server response.
+**Important exports/functions/components:** `runAnalysis()` accepts only validated saved Analysis+Action+event responses. `updateAction()` saves edits/cancellation or requests controlled approval execution, then updates from validated server state.
 
 **Data in:** A fixture Enquiry plus optional Zod-validated persisted Analysis and Action.
 
-**Data out:** Review UI whose draft body and Action status come from persisted state. Only the illustrative per-enquiry timeline remains local/fixture data.
+**Data out:** Review UI whose draft, execution result, and timeline come from persisted state once a real workflow exists; otherwise the timeline says `FIXTURE HISTORY`.
 
 **Runs where:** Browser (`"use client"`), because it owns button events, request loading/errors, editing, and local review interactions.
 
@@ -303,17 +335,17 @@ Persistence errors use the stable `persistence_unavailable` API error and preven
 
 **Called by:** `app/activity/page.tsx`.
 
-**Calls / depends on:** `mockWorkspaceActivity`, `mockEnquiries`, `WorkspaceActivityType`; local React filter state; Next.js links.
+**Calls / depends on:** Server-provided persisted ActivityEvents, mock fallback events, local filters, and enquiry links.
 
 **Important exports/functions/components:** `ActivityHistory`; `matchesFilter()` defines event categories; `eventPresentation` maps event types to icons/styles; `formatDate()` and `formatTime()` produce labels.
 
-**Data in:** Seeded workspace events and seeded enquiries used to resolve event links.
+**Data in:** Zod-validated persisted events when available, otherwise clearly labeled fixture events.
 
 **Data out:** Events filtered by type, sorted newest-first, grouped by date, and linked to matching enquiry details where possible.
 
 **Runs where:** Browser (`"use client"`), as the activity filter is interactive.
 
-**Why it exists:** Keeps the history view separate from per-enquiry detail interactions. Its source array is fixture data, not a live event store.
+**Why it exists:** Makes the persisted audit trail visible without adding another product surface.
 
 ### `app/api/ai/analyze/route.ts`
 
@@ -327,13 +359,13 @@ Persistence errors use the stable `persistence_unavailable` API error and preven
 
 **Data in:** An HTTP JSON request containing `enquiryId` and `originalText`.
 
-**Data out:** Success only after save: `{ analysis, action }`; failures retain stable safe 400/502/503 contracts.
+**Data out:** Success only after save: `{ analysis, action, events }`; failures retain stable safe 400/502/503 contracts.
 
 ### `app/api/actions/route.ts`
 
 **Purpose:** Small server mutation boundary for Action review.
 
-**Important behavior:** `PATCH()` validates Action ID, enquiry ID, operation, and full draft payload; verifies the demo enquiry; then delegates to the persistence layer. Invalid or stale/terminal transitions return `409 invalid_transition`. Approval stores status and content only—there is no execution call.
+**Important behavior:** `PATCH()` validates the request and demo enquiry. Edit/cancel use an atomic review+event function. Approve/retry atomically claim execution; only a successful claim calls the email service. Duplicate or already-successful requests return stored state without sending.
 
 **Runs where:** Next.js server route handler, not in the browser.
 
@@ -361,13 +393,13 @@ Persistence errors use the stable `persistence_unavailable` API error and preven
 
 ### `lib/persistence/supabase.ts`
 
-**Purpose:** Owns the server-only Supabase boundary for Analysis creation, Action creation/restoration, and Action review mutations.
+**Purpose:** Owns the server-only Supabase boundary for workflow creation, atomic execution claims/finalization, ActivityEvent persistence, and validated restoration.
 
 **Called by:** Both API routes and the server detail page.
 
-**Calls / depends on:** Supabase, server-only credentials, Analysis schemas, and Action schemas/transition rules.
+**Calls / depends on:** Supabase, server-only credentials, Analysis/Action/ActivityEvent schemas, and execution-result contracts.
 
-**Important exports/functions/components:** `saveValidatedAnalysis()` inserts an Analysis and its single proposed Action; every explicit rerun creates a new pair. `getLatestAnalysisState()` validates the newest Analysis and linked Action. `updatePersistedAction()` validates payload/current row, enforces allowed transitions with an optimistic status match, and returns validated stored state.
+**Important exports/functions/components:** `saveValidatedAnalysis()` saves Analysis, proposed Action, and initial audit events. `claimPersistedActionExecution()` uses the database claim function. `finalizePersistedActionExecution()` atomically stores provider result plus audit event. Read functions validate every restored row.
 
 **Runs where:** Next.js server only. The module imports `"server-only"`; its privileged credential and client are never sent to the browser.
 
@@ -375,13 +407,17 @@ Persistence errors use the stable `persistence_unavailable` API error and preven
 
 ### Supabase migrations
 
-The original migrations create `enquiries` and `analyses`. `20261008120000_actions.sql` adds the linked `actions` table, strict database checks, latest-action index, RLS, explicit browser-role revocation, and only `select/insert/update` for `service_role`.
+The original migrations create `enquiries`, `analyses`, and `actions`. `20261008170000_activity_execution.sql` adds controlled execution and audit state. `20261008190000_demo_sessions.sql` adds visitor scope, execution mode, `email_simulated`, composite indexes, and session-enforcing review/claim/finalization functions without deleting legacy rows.
 
 The browser never queries these tables. The service role is used only inside the `server-only` persistence module.
 
-### `lib/action-schema.ts` and `lib/analysis-workflow-schema.ts`
+### Execution and audit schemas
 
-`PersistedActionSchema` accepts only a strict `draft_reply` payload and statuses `proposed`, `edited`, `approved`, or `cancelled`. IDs, timestamps, recipient email, subject, body, tone, and key points are validated. `transitionActionStatus()` allows only pending review transitions; approved/cancelled are terminal. The workflow schema validates the combined `{ analysis, action }` API response.
+`PersistedActionSchema` validates review and execution invariants. `EmailExecutionResultSchema` permits only succeeded, confirmed failed, or indeterminate outcomes. `PersistedActivityEventSchema` validates IDs, relationships, event type, safe structured details, and timestamps. API responses include validated events.
+
+### `lib/execution/send-test-email.ts`
+
+This server-only Resend boundary is reached only in `resend` mode and accepts an approved, claimed, pending Action. It redirects delivery to validated `TEST_EMAIL_RECIPIENT`, prepends `[Morrow Test]`, uses plain text, and sends with the stable Action-derived idempotency key. Demo execution is resolved before this boundary and cannot instantiate or call Resend.
 
 ### `lib/lead-analysis-schema.ts`
 
@@ -435,7 +471,7 @@ The browser never queries these tables. The service role is used only inside the
 
 **Runs where:** Server and client as imported by route files and client components.
 
-**Why it exists:** Separates the workspace's seeded records and event taxonomy from both shared display types and UI. These are not database records; the activity feed is not automatically updated by detail-page state changes.
+**Why it exists:** Separates seeded queue/demo fallback data from persisted workflow records. Saved ActivityEvents replace these events in activity views when available.
 
 ### `tests/lead-analysis-schema.test.mjs`
 
@@ -469,17 +505,21 @@ The browser never queries these tables. The service role is used only inside the
 
 **Purpose:** Verifies valid persisted Action parsing, rejection of unsupported types/statuses and malformed payloads, schema-valid edited content, allowed approval/cancellation transitions, and terminal-state protection. It is a pure application-logic test, not a live Supabase test.
 
+### `tests/activity-execution-schema.test.mjs`
+
+**Purpose:** Verifies ActivityEvent parsing, claim eligibility, terminal duplicate protection, test-recipient redirection, stable idempotency keys, and safe execution-result categories without contacting Resend.
+
 ### Verification status
 
-The automated suites cover Analysis and Action contracts. The pre-existing Analysis round trip was manually verified in Stage 2B; the Stage 2C Action migration and live edit/decision round trip still require manual Supabase verification.
+Automated suites cover Analysis, Action execution invariants, truthful simulated events, both execution-mode branches, safe default configuration, anonymous-session ownership helpers, test-recipient redirection, stable idempotency keys, and failure representation. They do not call Gemini, Supabase, or Resend. Stage 2E still requires the documented two-browser live isolation test.
 
 ### `README.md`, `.env.example`, and `.gitignore`
 
-**Purpose:** Document local Gemini setup and keep local secrets out of source control.
+**Purpose:** Document local Gemini, Supabase, and controlled Resend setup while keeping secrets out of source control.
 
 **Called by:** Developers while configuring/running the app; `.gitignore` is applied by Git.
 
-**Calls / depends on:** `.env.example` names `GEMINI_API_KEY`, `GEMINI_MODEL`, `SUPABASE_URL`, and `SUPABASE_SECRET_KEY`; `README.md` explains server-side setup; `.gitignore` ignores `.env*` but permits `.env.example`.
+**Calls / depends on:** `.env.example` names Gemini/Supabase configuration plus `EMAIL_EXECUTION_MODE`, `RESEND_API_KEY`, and `TEST_EMAIL_RECIPIENT`; `.gitignore` keeps actual values out of source control.
 
 **Important exports/functions/components:** None; these are setup files.
 
@@ -491,14 +531,14 @@ The automated suites cover Analysis and Action contracts. The pre-existing Analy
 
 **Why it exists:** Keeps setup instructions separate from runtime code and reduces the risk of committing `.env.local`. The Supabase secret key must remain server-only and must not use a `NEXT_PUBLIC_` prefix.
 
-## 4. React state and what survives refresh
+## 5. React state and what survives refresh
 
 Keep these data/state categories separate:
 
-1. **Fixture enquiry data** seeds queue rows and the detail page's source/contact fields; the activity page remains a separately seeded fixture feed.
-2. **Persisted Analysis and Action** are the durable AI result, editable proposal, and review decision.
+1. **Fixture enquiry data** seeds queue rows and source/contact fields; fixture activity is only a labeled fallback.
+2. **Persisted Analysis, Action, and ActivityEvents** are the durable AI result, proposal, review/execution result, and audit trail.
 3. **Temporary React state** holds editor text/loading/errors and the latest server-confirmed records while mounted.
-4. **Server-loaded persisted state** is queried and validated on each detail-page visit, then passed as `initialAnalysis` and `initialAction`.
+4. **Server-loaded persisted state** is queried and validated on each detail-page visit, then passed as `initialAnalysis`, `initialAction`, and `initialEvents`.
 
 ### `EnquiryDashboard`
 
@@ -510,8 +550,8 @@ Keep these data/state categories separate:
 ### `ActivityHistory`
 
 - `filter` begins as `"all"` and changes when the user selects an activity category.
-- Sorted, filtered, grouped events and the enquiry lookup map are derived from static arrays; they are not persisted.
-- Refresh restores `"all"` and reloads the same seeded history.
+- Sorted, filtered, grouped events derive from validated persisted events when available; otherwise the page labels and shows the fixture fallback.
+- Refresh resets only the filter and reloads the saved audit trail from Supabase.
 
 ### `WorkspaceShell`
 
@@ -526,30 +566,33 @@ Keep these data/state categories separate:
 - `liveAnalysis` starts from the server-provided `initialAnalysis` (or `null`). A successful `/api/ai/analyze` response replaces it after the server has persisted the validated result.
 - `isAnalyzing` drives the loading UI; `analysisError` holds a message for the current request.
 - The analysis fields shown are derived from the live object when present, otherwise from the fixture. Some nullable live values intentionally display as “Not identified” or “Not provided” rather than returning to a seeded analysis value.
-- Approval and cancellation persist terminal decisions but do not send email or update `mockWorkspaceActivity`.
+- Approval claims the configured simulation or controlled test email, then persists mode plus succeeded/failed/pending state. Cancelled Actions never execute.
+- `persistedEvents` replaces the fixture detail timeline after a real workflow is saved.
 
-On refresh, filters and illustrative timeline changes reset. The server restores the newest validated Analysis plus associated validated Action, so edited content and approved/cancelled status survive.
+On refresh, filters reset. The server restores the current session's newest validated Analysis, associated Action execution result, and persisted audit trail; refresh itself never executes anything.
 
-## 5. The AI boundary and environment
+## 6. External-service boundaries and environment
 
 The external-service paths are:
 
 ```text
 Browser → Next.js server → Gemini
 Enquiry detail page → Next.js server → Supabase
+Approved claimed Action → Next.js server → demo success (public, no email)
+Approved claimed Action → Next.js server → Resend → TEST_EMAIL_RECIPIENT (private test)
 ```
 
-`EnquiryDetail` knows only same-origin `/api/ai/analyze` and `/api/actions`. Both delegate database work to the server-only persistence module. The browser never receives Gemini or Supabase credentials.
+`EnquiryDetail` knows only same-origin routes. Database and email work remain in server-only modules. The browser never receives Gemini, Supabase, or Resend credentials or the configured test recipient.
 
-The server reads `GEMINI_API_KEY` and `GEMINI_MODEL` for Gemini, and `SUPABASE_URL` plus `SUPABASE_SECRET_KEY` for persistence. The Supabase key is server-only, is not prefixed `NEXT_PUBLIC_`, and is not included in requests, page props, or API responses. `.env.example` lists variable names only; real values belong in ignored `.env.local` or another server environment. A missing Gemini key/model maps to `503 missing_configuration`; missing Supabase configuration or persistence failure maps to `503 persistence_unavailable`.
+The server reads Gemini and Supabase configuration plus `EMAIL_EXECUTION_MODE`. Missing or invalid mode configuration resolves to `demo`. Only explicit `resend` mode reads `RESEND_API_KEY` and `TEST_EMAIL_RECIPIENT`; missing/invalid Resend configuration creates a safe failed state without contacting the provider and does not roll back human approval.
 
-RLS is enabled on all three tables. The Action migration explicitly revokes `anon` and `authenticated` privileges and grants only required service-role operations. Provider/database diagnostics omit enquiry contents, reply contents, and credentials.
+RLS is enabled on all four tables. The new migration revokes `anon`/`authenticated` table and function access, grants `service_role` only `SELECT`/`INSERT` for activity plus required function execution, and grants no delete permission. Diagnostics omit enquiry contents, draft body, recipient, and credentials.
 
 The provider retries known transient HTTP API errors only: 429 and selected 5xx statuses (500, 502, 503, 504). These commonly represent rate limiting or temporary service trouble. It makes at most three calls total (initial attempt plus two retries), with short increasing delays. Other failures such as authentication or malformed requests cannot be fixed by repeating the same request, so they fail immediately. Model output validation failures happen after the provider call and are not part of this retry loop.
 
 In development, timing logs report model name, attempt number, and elapsed milliseconds. They do not log the key, enquiry, or model output. The API route has separate server-side provider diagnostics; browser-facing errors remain generic or schema-defined.
 
-## 6. Zod and structured AI output
+## 7. Zod and structured external data
 
 `LeadAnalysisSchema` in `lib/lead-analysis-schema.ts` is the runtime source of truth for a valid analysis. It describes required fields and constraints such as nullable unknown facts, allowed priority values, numeric lead score between 0 and 100, and strict nested objects. `LeadAnalysis` is inferred from that schema, so TypeScript consumers use the same field structure that runtime validation enforces.
 
@@ -569,35 +612,35 @@ validated LeadAnalysis
 
 The exact Gemini request sets `response_format` to text with `mime_type: "application/json"` and supplies the JSON Schema. That asks the model to constrain output to the structured shape; it does not make external output inherently trustworthy. The response still crosses a network/provider boundary and can be absent, malformed, or violate application constraints. `JSON.parse()` checks JSON syntax; it does not check field types or business constraints. `safeParse()` performs that second check and produces a typed value only on success.
 
-The route validates AI output independently, then validates the combined `{ analysis, action }` workflow response before returning. Action requests/responses and restored rows have their own strict schemas.
+The route validates AI output independently, then validates `{ analysis, action, events }`. Action requests, Resend results, ActivityEvents, and every restored database row have strict application-owned schemas.
 
-## 7. Next.js concepts used here
+## 8. Next.js concepts used here
 
 - **App Router:** The `app/` directory maps pages and the `/api/ai/analyze` plus `/api/actions` route handlers.
 - **`page.tsx`:** Route UI entry points are in `app/**/page.tsx`. They are Server Components by default. Here they compose the shell and client components, rather than owning interactive state.
 - **Dynamic route:** `app/enquiries/[id]/page.tsx` uses the `[id]` folder to capture an enquiry ID. It awaits Next.js's `params` promise, selects a matching mock record, and uses `notFound()` when no fixture matches. `generateStaticParams()` exposes the existing fixture IDs; `connection()` ensures the saved-analysis query runs at request time.
 - **API `route.ts`:** Analysis uses `POST`; Action review uses uncached `PATCH`. Both are server boundaries called by the client component.
 - **Client components:** `components/enquiry-detail.tsx`, `components/enquiry-dashboard.tsx`, `components/activity-history.tsx`, and `components/workspace-shell.tsx` start with `"use client"` because they use state, event handlers, browser fetch, or client navigation state.
-- **Server/client composition:** The detail page passes fixture props plus validated `initialAnalysis` and `initialAction` to the client component.
-- **Server-only integrations:** `lib/ai/analyze-enquiry.ts` and `lib/persistence/supabase.ts` import `"server-only"` to prevent accidental client use. They access private environment variables and their respective service SDKs.
+- **Server/client composition:** Server pages load and validate workflow/audit state before passing serializable props to client components.
+- **Server-only integrations:** Gemini, Supabase, and Resend modules import `"server-only"` and own their private credentials.
 - **Root layout:** `app/layout.tsx` provides the shared document, global stylesheet import, and metadata. `app/page.tsx` uses Next's `redirect()` to send the root route to the dashboard.
 
-## 8. Recommended reading order
+## 9. Recommended reading order
 
 1. **`app/enquiries/[id]/page.tsx`** — Follow request-time Analysis+Action restore.
-2. **`lib/persistence/supabase.ts`** — Understand save, restore, and guarded transition paths.
+2. **`lib/persistence/supabase.ts`** — Understand save, atomic execution claim/finalization, and restore paths.
 3. **`components/enquiry-detail.tsx`** — Follow persisted review interactions.
 4. **`app/api/ai/analyze/route.ts`** — Trace request validation, AI validation, persistence ordering, and response.
 5. **`lib/ai/analyze-enquiry.ts`** — Read the server-only Gemini request, structured-output config, retries, and Zod validation.
-6. **`lib/lead-analysis-schema.ts`** and **`lib/action-schema.ts`** — Learn the strict boundary contracts.
-7. **`supabase/migrations/20261008120000_actions.sql`** — Review Action constraints, RLS, and grants.
+6. **`lib/action-schema.ts`, `lib/execution-schema.ts`, and `lib/activity-event-schema.ts`** — Learn execution/audit contracts.
+7. **`supabase/migrations/20261008170000_activity_execution.sql`** — Review idempotency claims, audit transactions, RLS, and grants.
 8. **`lib/mock-workspace.ts`** and **`lib/mock-enquiry.ts`** — Compare fixture enquiry/activity data with persisted Analysis data.
-9. **`components/enquiry-dashboard.tsx`** and **`components/activity-history.tsx`** — See which screens remain fixture-driven.
+9. **`components/activity-history.tsx`** — See persisted audit display and labeled fixture fallback.
 10. **`components/workspace-shell.tsx`** — See shared navigation and its local state.
 11. **`tests/*.test.mjs`** — Review pure Analysis and Action validation tests; none calls Gemini or Supabase.
 12. **`app/dashboard/page.tsx`, `app/enquiries/page.tsx`, `app/activity/page.tsx`, `app/layout.tsx`, and `app/page.tsx`** — Review the remaining route composition and root layout/redirect.
 
-## 9. Current architecture versus future work
+## 10. Current architecture versus future work
 
 ### Current implementation
 
@@ -608,27 +651,27 @@ React client → POST /api/ai/analyze
        ↓
 Next.js server → Gemini structured output
        ↓
-Zod validation → persisted Analysis + proposed Action
+Zod validation → persisted Analysis + proposed Action + audit events
 ↓
-human edit / approve / cancel → validated PATCH → persisted Action
+human edit / approve / cancel → validated PATCH
+↓
+atomic execution claim → controlled Resend test delivery
+↓
+persisted result + ActivityEvent
 ↓ later visit / refresh
-server-side Supabase query → stored Analysis + Action Zod validation
+server-side Supabase query → stored Analysis + Action + events Zod validation
 ↓
-EnquiryDetail restores saved analysis, content, and decision
+UI restores analysis, content, execution result, and audit trail
 ```
 
-The queue, source enquiries, and activity feed remain fixture-based. Analysis and review state are persisted. No email is sent and no Action is executed.
+The queue and source enquiries remain fixture-based. Approved Actions send only to the configured developer test inbox; fictional customer addresses are never delivery targets.
 
 ### Future architecture
 
-Only execution and durable audit history remain future:
+Future work is deliberately outside this controlled portfolio path:
 
 ```text
-approved tool/function execution
-       ↓
-email / external API
-       ↓
-persisted ActivityEvent
+real customer delivery · CRM tools · authentication · background reconciliation · other integrations
 ```
 
-Approval is now durable but deliberately disconnected from execution. Email and persisted `ActivityEvent` records belong to Stage 2D.
+The indeterminate network state intentionally requires manual reconciliation; it is not automatically retried because avoiding duplicate email is the stronger safety requirement.

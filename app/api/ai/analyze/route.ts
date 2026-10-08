@@ -15,6 +15,7 @@ import {
   PersistenceError,
   saveValidatedAnalysis,
 } from "@/lib/persistence/supabase";
+import { getDemoSessionId, DemoSessionError } from "@/lib/demo-session-server";
 
 function errorResponse(
   status: number,
@@ -25,6 +26,14 @@ function errorResponse(
 }
 
 export async function POST(request: Request) {
+  let demoSessionId;
+  try {
+    demoSessionId = await getDemoSessionId();
+  } catch (error) {
+    if (error instanceof DemoSessionError) return errorResponse(400, "invalid_request", "Start a valid demo session and try again.");
+    throw error;
+  }
+
   let requestBody: unknown;
 
   try {
@@ -54,9 +63,9 @@ export async function POST(request: Request) {
     }
 
     // The provider returns LeadAnalysis only after Zod validation; the persistence boundary validates it again.
-    const action = await saveValidatedAnalysis(enquiry, response.data);
+    const saved = await saveValidatedAnalysis(demoSessionId, enquiry, response.data);
 
-    return Response.json(AnalyzeEnquiryWorkflowResponseSchema.parse({ analysis: response.data, action }));
+    return Response.json(AnalyzeEnquiryWorkflowResponseSchema.parse({ analysis: response.data, ...saved }));
   } catch (error) {
     if (error instanceof AnalysisConfigurationError) {
       return errorResponse(503, "missing_configuration", "AI analysis is not configured. Set GEMINI_API_KEY and GEMINI_MODEL on the server.");
