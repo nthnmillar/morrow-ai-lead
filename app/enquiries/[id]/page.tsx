@@ -4,8 +4,9 @@ import { EnquiryDetail } from "@/components/enquiry-detail";
 import { WorkspaceShell } from "@/components/workspace-shell";
 import { mockEnquiries } from "@/lib/mock-workspace";
 import type { LeadAnalysis } from "@/lib/lead-analysis-schema";
+import type { PersistedAction } from "@/lib/action-schema";
 import {
-  getLatestAnalysis,
+  getLatestAnalysisState,
   PersistenceConfigurationError,
   PersistenceError,
 } from "@/lib/persistence/supabase";
@@ -26,9 +27,12 @@ export default async function EnquiryPage({ params }: { params: Promise<{ id: st
   await connection();
 
   let initialAnalysis: LeadAnalysis | null = null;
+  let initialAction: PersistedAction | null = null;
   let persistenceError: string | null = null;
   try {
-    initialAnalysis = await getLatestAnalysis(enquiry.id);
+    const state = await getLatestAnalysisState(enquiry.id);
+    initialAnalysis = state?.analysis ?? null;
+    initialAction = state?.action ?? null;
   } catch (error) {
     if (error instanceof PersistenceConfigurationError) {
       persistenceError = "Saved analysis is unavailable until Supabase is configured.";
@@ -46,6 +50,7 @@ export default async function EnquiryPage({ params }: { params: Promise<{ id: st
         key={enquiry.id}
         enquiry={enquiry}
         initialAnalysis={initialAnalysis}
+        initialAction={initialAction}
         persistenceError={persistenceError}
       />
     </WorkspaceShell>

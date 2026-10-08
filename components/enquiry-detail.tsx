@@ -1,6 +1,13 @@
 "use client";
 
 import {
+  ActionErrorSchema,
+  ActionResponseSchema,
+  UpdateActionRequestSchema,
+  type ActionOperation,
+  type PersistedAction,
+} from "@/lib/action-schema";
+import {
   Activity,
   ArrowUpRight,
   BadgeCheck,
@@ -27,11 +34,9 @@ import type { WorkspaceEnquiry } from "@/lib/mock-workspace";
 import {
   AnalyzeEnquiryErrorSchema,
   AnalyzeEnquiryRequestSchema,
-  AnalyzeEnquiryResponseSchema,
   type LeadAnalysis,
 } from "@/lib/lead-analysis-schema";
-
-type ActionState = "awaiting" | "approved" | "cancelled";
+import { AnalyzeEnquiryWorkflowResponseSchema } from "@/lib/analysis-workflow-schema";
 
 function InfoTile({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
   return (
@@ -95,16 +100,20 @@ function formatBudgetRange(budget: LeadAnalysis["budgetRange"]) {
 export function EnquiryDetail({
   enquiry,
   initialAnalysis = null,
+  initialAction = null,
   persistenceError = null,
 }: {
   enquiry: WorkspaceEnquiry;
   initialAnalysis?: LeadAnalysis | null;
+  initialAction?: PersistedAction | null;
   persistenceError?: string | null;
 }) {
-  // Review controls and draft edits are local prototype state; only analysis calls the server.
-  const [actionState, setActionState] = useState<ActionState>(enquiry.actionStatus ?? "awaiting");
+  // Persisted Action state is the durable source; local text is only the current editor value.
+  const [action, setAction] = useState<PersistedAction | null>(initialAction);
   const [isEditing, setIsEditing] = useState(false);
-  const [draftBody, setDraftBody] = useState(enquiry.proposedAction.body);
+  const [draftBody, setDraftBody] = useState(initialAction?.payload.body ?? enquiry.proposedAction.body);
+  const [isSavingAction, setIsSavingAction] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [events, setEvents] = useState(enquiry.activity);
   // A restored server result initializes the view; later successful runs replace it in local state.
   const [liveAnalysis, setLiveAnalysis] = useState<LeadAnalysis | null>(initialAnalysis);
@@ -125,6 +134,8 @@ export function EnquiryDetail({
   const requirements = liveAnalysis?.requirements ?? enquiry.requirements;
   const missingInformation = liveAnalysis?.missingInformation ?? enquiry.missingInformation;
   const recommendedNextAction = liveAnalysis?.recommendedNextStep ?? enquiry.recommendedNextAction;
+  const actionState = action?.status ?? "proposed";
+  const actionBadgeState = actionState === "approved" || actionState === "cancelled" ? actionState : "awaiting";
 
   // Requests server-side analysis and persistence, then updates local state after the saved response validates.
   async function runAnalysis() {
@@ -156,13 +167,16 @@ export function EnquiryDetail({
       }
 
       // Validate the endpoint response again before it enters render state.
-      const result = AnalyzeEnquiryResponseSchema.safeParse(payload);
+      const result = AnalyzeEnquiryWorkflowResponseSchema.safeParse(payload);
       if (!result.success) {
         setAnalysisError("The analysis result could not be verified. Please try again.");
         return;
       }
 
       setLiveAnalysis(result.data.analysis);
+      setAction(result.data.action);
+      setDraftBody(result.data.action.payload.body);
+      setIsEditing(false);
     } catch {
       setAnalysisError("AI analysis could not be completed. Check your connection and try again.");
     } finally {
@@ -170,25 +184,65 @@ export function EnquiryDetail({
     }
   }
 
-  // Simulate the review decision and timeline update; no email or external action is executed.
-  function updateAction(nextState: Exclude<ActionState, "awaiting">) {
-    // Approval/cancellation updates this prototype's local presentation; it does not execute an action.
-    setActionState(nextState);
-    setIsEditing(false);
-    setEvents((current) => [
-      ...current.map((event) => event.id === "awaiting-approval"
-        ? { ...event, status: "complete" as const, detail: "Review completed by you" }
-        : event),
-      {
-        id: `action-${nextState}`,
-        title: nextState === "approved" ? "Action approved" : "Action cancelled",
-        detail: nextState === "approved"
-          ? "Approved for draft creation. No email was sent."
-          : "The proposed follow-up was cancelled.",
-        time: "Just now",
-        status: "current",
-      },
-    ]);
+  async function updateAction(operation: ActionOperation) {
+    if (!action) return;
+    setActionError(null);
+    const request = UpdateActionRequestSchema.safeParse({
+      enquiryId: enquiry.id,
+      actionId: action.id,
+      operation,
+      payload: { ...action.payload, body: draftBody },
+    });
+    if (!request.success) {
+      setActionError("The draft contains invalid or missing content.");
+      return;
+    }
+
+    setIsSavingAction(true);
+    try {
+      const response = await fetch("/api/actions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.data),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) {
+        const failure = ActionErrorSchema.safeParse(payload);
+        setActionError(failure.success ? failure.data.error.message : "The Action could not be saved. Please try again.");
+        return;
+      }
+
+      const result = ActionResponseSchema.safeParse(payload);
+      if (!result.success) {
+        setActionError("The saved Action could not be verified. Please refresh and try again.");
+        return;
+      }
+      setAction(result.data.action);
+      setDraftBody(result.data.action.payload.body);
+      setIsEditing(false);
+
+      if (operation !== "save_edit") {
+        const decision = result.data.action.status;
+        setEvents((current) => [
+          ...current.map((event) => event.id === "awaiting-approval"
+            ? { ...event, status: "complete" as const, detail: "Review completed by you" }
+            : event),
+          {
+            id: `action-${decision}`,
+            title: decision === "approved" ? "Action approved" : "Action cancelled",
+            detail: decision === "approved"
+              ? "Approval saved. No email was sent."
+              : "The proposed follow-up was cancelled.",
+            time: "Just now",
+            status: "current",
+          },
+        ]);
+      }
+    } catch {
+      setActionError("The Action could not be saved. Check your connection and try again.");
+    } finally {
+      setIsSavingAction(false);
+    }
   }
 
   return (
@@ -201,8 +255,8 @@ export function EnquiryDetail({
           <p className="page-subtitle">Review the enquiry, analysis and suggested follow-up.</p>
         </div>
         <div className="heading-status">
-          <span className={`status-badge ${analysisFailed ? "status-failed" : `status-${actionState}`}`}><span className="status-dot" />
-            {analysisFailed ? "Analysis failed" : actionState === "awaiting" ? "Awaiting review" : actionState === "approved" ? "Approved" : "Cancelled"}
+          <span className={`status-badge ${analysisFailed ? "status-failed" : `status-${actionBadgeState}`}`}><span className="status-dot" />
+            {analysisFailed ? "Analysis failed" : !action ? "No saved action" : actionState === "proposed" ? "Awaiting review" : actionState === "edited" ? "Edited · awaiting review" : actionState === "approved" ? "Approved" : "Cancelled"}
           </span>
           <button className="icon-button more-button" type="button" aria-label="More enquiry options"><MoreHorizontal size={20} /></button>
         </div>
@@ -299,41 +353,42 @@ export function EnquiryDetail({
             )}
           </section>
 
-          {/* Human review controls act on a display-only proposal in this prototype. */}
-          {enquiry.analysisStatus !== "failed" && <section className="panel action-panel" aria-labelledby="action-heading">
+          {/* Human decisions persist through the server; approval deliberately performs no external action. */}
+          {action && <section className="panel action-panel" aria-labelledby="action-heading">
             <div className="section-heading action-heading">
               <div className="section-title-wrap">
                 <span className="action-icon"><Send size={15} /></span>
                 <div><div className="section-kicker">PROPOSED ACTION</div><h2 id="action-heading">Draft a follow-up email</h2></div>
               </div>
-              <span className={`proposal-state${actionState !== "awaiting" ? ` proposal-${actionState}` : ""}`}>{actionState === "awaiting" ? "Needs approval" : actionState === "approved" ? "Approved" : "Cancelled"}</span>
+              <span className={`proposal-state${actionBadgeState !== "awaiting" ? ` proposal-${actionBadgeState}` : ""}`}>{actionState === "proposed" ? "Needs approval" : actionState === "edited" ? "Edited · needs approval" : actionState === "approved" ? "Approved" : "Cancelled"}</span>
             </div>
-            <div className="action-recipient"><span>TO</span><strong>{contactName}</strong><span className="recipient-email">&lt;{contactEmail}&gt;</span></div>
-            <div className="action-subject"><span>SUBJECT</span>{enquiry.proposedAction.subject}</div>
+            <div className="action-recipient"><span>TO</span><strong>{action.payload.recipientName}</strong><span className="recipient-email">&lt;{action.payload.to}&gt;</span></div>
+            <div className="action-subject"><span>SUBJECT</span>{action.payload.subject}</div>
             {isEditing ? (
               <label className="draft-editor"><span className="sr-only">Edit proposed email</span><textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} rows={8} /></label>
             ) : (
               <div className="draft-preview">{draftBody.split("\n").map((line, index) => <p key={`${index}-${line || "space"}`}>{line || " "}</p>)}</div>
             )}
             <div className="action-footer">
-              {actionState === "awaiting" ? (
+              {actionState === "proposed" || actionState === "edited" ? (
                 <>
                   <div className="approval-buttons">
-                    <button className="button button-primary" type="button" onClick={() => updateAction("approved")}><CheckCircle2 size={16} /> Approve</button>
-                    <button className={`button button-secondary${isEditing ? " is-saving" : ""}`} type="button" onClick={() => setIsEditing((current) => !current)}><Pencil size={15} />{isEditing ? "Save edits" : "Edit"}</button>
-                    <button className="button button-text" type="button" onClick={() => updateAction("cancelled")}><X size={15} /> Cancel</button>
+                    <button className="button button-primary" type="button" onClick={() => void updateAction("approve")} disabled={isSavingAction}><CheckCircle2 size={16} /> Approve</button>
+                    <button className={`button button-secondary${isEditing ? " is-saving" : ""}`} type="button" disabled={isSavingAction} onClick={() => isEditing ? void updateAction("save_edit") : setIsEditing(true)}><Pencil size={15} />{isEditing ? "Save edits" : "Edit"}</button>
+                    <button className="button button-text" type="button" onClick={() => void updateAction("cancel")} disabled={isSavingAction}><X size={15} /> Cancel</button>
                   </div>
-                  <span className="approval-note"><ShieldCheck size={14} /> Nothing is sent without your approval.</span>
+                  <span className="approval-note"><ShieldCheck size={14} /> {isSavingAction ? "Saving decision…" : "Approval saves the decision only; nothing is sent."}</span>
                 </>
               ) : (
                 <div className={`action-result result-${actionState}`}>
                   {actionState === "approved" ? <CheckCircle2 size={16} /> : <X size={16} />}
                   <span>{actionState === "approved"
-                    ? enquiry.actionOutcome === "email_sent" ? "Approved follow-up sent in this mock history." : "Approved for draft creation. This prototype sends nothing."
+                    ? "Approval saved. No email was sent."
                     : "This proposed action was cancelled."}</span>
                 </div>
               )}
             </div>
+            {actionError && <p className="analysis-request-error" role="alert">{actionError}</p>}
           </section>}
         </div>
 

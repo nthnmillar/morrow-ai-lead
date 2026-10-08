@@ -7,8 +7,9 @@ import { mockEnquiries } from "@/lib/mock-workspace";
 import {
   AnalyzeEnquiryErrorSchema,
   AnalyzeEnquiryRequestSchema,
-  AnalyzeEnquiryResponseSchema,
+  LeadAnalysisSchema,
 } from "@/lib/lead-analysis-schema";
+import { AnalyzeEnquiryWorkflowResponseSchema } from "@/lib/analysis-workflow-schema";
 import {
   PersistenceConfigurationError,
   PersistenceError,
@@ -45,7 +46,7 @@ export async function POST(request: Request) {
 
   try {
     const analysis = await analyzeEnquiryText(enquiry.originalText);
-    const response = AnalyzeEnquiryResponseSchema.safeParse({ analysis });
+    const response = LeadAnalysisSchema.safeParse(analysis);
 
     if (!response.success) {
       console.error("Lead analysis failed response validation.", response.error);
@@ -53,9 +54,9 @@ export async function POST(request: Request) {
     }
 
     // The provider returns LeadAnalysis only after Zod validation; the persistence boundary validates it again.
-    await saveValidatedAnalysis(enquiry, response.data.analysis);
+    const action = await saveValidatedAnalysis(enquiry, response.data);
 
-    return Response.json(response.data);
+    return Response.json(AnalyzeEnquiryWorkflowResponseSchema.parse({ analysis: response.data, action }));
   } catch (error) {
     if (error instanceof AnalysisConfigurationError) {
       return errorResponse(503, "missing_configuration", "AI analysis is not configured. Set GEMINI_API_KEY and GEMINI_MODEL on the server.");

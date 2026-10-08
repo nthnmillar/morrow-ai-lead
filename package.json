@@ -10,7 +10,8 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test:analysis": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/lead-analysis-schema.test.mjs",
-    "test:persistence": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/persisted-analysis.test.mjs"
+    "test:persistence": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/persisted-analysis.test.mjs",
+    "test:actions": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/action-schema.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.3.0",

@@ -39,10 +39,6 @@ export const AnalyzeEnquiryRequestSchema = z.object({
   originalText: z.string().trim().min(1).max(12000),
 }).strict();
 
-export const AnalyzeEnquiryResponseSchema = z.object({
-  analysis: LeadAnalysisSchema,
-}).strict();
-
 export const AnalyzeEnquiryErrorSchema = z.object({
   error: z.object({
     code: z.enum(["invalid_request", "missing_configuration", "analysis_unavailable", "persistence_unavailable"]),
